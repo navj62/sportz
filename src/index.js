@@ -1,53 +1,33 @@
-import { eq } from "drizzle-orm";
-import { db, pool } from "./db.js";
-import { demoUsers } from "./schema.js";
+import express from 'express';
+import { matchRouter } from "./routes/matches.js";
+import http from "http";
 
-async function main() {
-  try {
-    console.log("Performing CRUD operations...");
 
-    const [newUser] = await db
-      .insert(demoUsers)
-      .values({ name: "Admin User", email: "admin@example.com" })
-      .returning();
+const PORT = 8000;
+const HOST=process.env.HOST;
 
-    if (!newUser) {
-      throw new Error("Failed to create user");
-    }
 
-    console.log("✅ CREATE: New user created:", newUser);
+const app = express();
+const server = http.createServer(app);
+app.use(express.json());
 
-    const foundUser = await db
-      .select()
-      .from(demoUsers)
-      .where(eq(demoUsers.id, newUser.id));
-    console.log("✅ READ: Found user:", foundUser[0]);
+app.get('/', (req, res) => {
+    res.send('Hello from Express server!');
+});
 
-    const [updatedUser] = await db
-      .update(demoUsers)
-      .set({ name: "Super Admin" })
-      .where(eq(demoUsers.id, newUser.id))
-      .returning();
+app.use('/matches', matchRouter);
 
-    if (!updatedUser) {
-      throw new Error("Failed to update user");
-    }
+const { broadcastMatchCreated } = attachWebSocketServer(server);
+app.locals.broadcastMatchCreated = broadcastMatchCreated;
 
-    console.log("✅ UPDATE: User updated:", updatedUser);
+server.listen(PORT, HOST, () => {
+    const baseUrl =
+        HOST === '0.0.0.0'
+            ? `http://localhost:${PORT}`
+            : `http://${HOST}:${PORT}`;
 
-    await db.delete(demoUsers).where(eq(demoUsers.id, newUser.id));
-    console.log("✅ DELETE: User deleted.");
-
-    console.log("\nCRUD operations completed successfully.");
-  } catch (error) {
-    console.error("❌ Error performing CRUD operations:", error);
-    process.exit(1);
-  } finally {
-    if (pool) {
-      await pool.end();
-      console.log("Database pool closed.");
-    }
-  }
-}
-
-main();
+    console.log(`Server is running on ${baseUrl}`);
+    console.log(
+        `WebSocket Server is running on ${baseUrl.replace('http', 'ws')}/ws`
+    );
+});
