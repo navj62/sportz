@@ -1,12 +1,16 @@
 import { db } from '../db/db.js';
 import { commentary } from '../db/schema.js';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq, lt } from 'drizzle-orm';
 
-export async function listCommentary({ matchId, limit }) {
+export async function listCommentary({ matchId, limit, cursor }) {
+    const conditions = [eq(commentary.matchId, matchId)];
+
+    if (cursor !== undefined) conditions.push(lt(commentary.id, cursor));
+
     return db
         .select()
         .from(commentary)
-        .where(eq(commentary.matchId, matchId))
-        .orderBy(desc(commentary.createdAt))
+        .where(and(...conditions))
+        .orderBy(desc(commentary.id))
         .limit(limit);
 }

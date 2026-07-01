@@ -1,10 +1,9 @@
 import { Router } from "express";
 import { listMatchesQuerySchema, matchIdParamSchema } from "../validation/matches.js";
 import { listMatches, getMatchById } from "../services/matchService.js";
+import { MAX_LIMIT } from "../constants.js";
 
 export const matchesRouter = Router();
-
-const MAX_LIMIT = 100;
 
 matchesRouter.get("/", async (req, res) => {
     const parsed = listMatchesQuerySchema.safeParse(req.query);
@@ -13,8 +12,9 @@ matchesRouter.get("/", async (req, res) => {
     }
     const limit = parsed.data.limit ?? MAX_LIMIT;
     try {
-        const data = await listMatches({ limit });
-        res.json({ data });
+        const data = await listMatches({ ...parsed.data, limit });
+        const nextCursor = data.length === limit ? data[data.length - 1].id : null;
+        res.json({ data, nextCursor });
     } catch (error) {
         console.error("GET /matches error:", error);
         return res.status(500).json({ error: "Internal server error" });

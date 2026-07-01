@@ -1,12 +1,21 @@
 import { db } from '../db/db.js';
 import { matches } from '../db/schema.js';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq, gte, lt, lte } from 'drizzle-orm';
 
-export async function listMatches({ limit }) {
+export async function listMatches({ limit, cursor, status, sport, startTimeFrom, startTimeTo }) {
+    const conditions = [];
+
+    if (cursor !== undefined)        conditions.push(lt(matches.id, cursor));
+    if (status !== undefined)        conditions.push(eq(matches.status, status));
+    if (sport !== undefined)         conditions.push(eq(matches.sport, sport));
+    if (startTimeFrom !== undefined) conditions.push(gte(matches.startTime, new Date(startTimeFrom)));
+    if (startTimeTo !== undefined)   conditions.push(lte(matches.startTime, new Date(startTimeTo)));
+
     return db
         .select()
         .from(matches)
-        .orderBy(desc(matches.createdAt))
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(matches.id))
         .limit(limit);
 }
 
