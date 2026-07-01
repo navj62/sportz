@@ -1,8 +1,6 @@
 import { Router } from "express";
 import { listMatchesQuerySchema, matchIdParamSchema } from "../validation/matches.js";
-import { db } from "../db/db.js";
-import { matches } from "../db/schema.js";
-import { desc, eq } from "drizzle-orm";
+import { listMatches, getMatchById } from "../services/matchService.js";
 
 export const matchesRouter = Router();
 
@@ -15,11 +13,7 @@ matchesRouter.get("/", async (req, res) => {
     }
     const limit = parsed.data.limit ?? MAX_LIMIT;
     try {
-        const data = await db
-            .select()
-            .from(matches)
-            .orderBy(desc(matches.createdAt))
-            .limit(limit);
+        const data = await listMatches({ limit });
         res.json({ data });
     } catch (error) {
         console.error("GET /matches error:", error);
@@ -33,7 +27,7 @@ matchesRouter.get("/:id", async (req, res) => {
         return res.status(400).json({ error: "Invalid match id", details: parsed.error.issues });
     }
     try {
-        const [match] = await db.select().from(matches).where(eq(matches.id, parsed.data.id));
+        const match = await getMatchById(parsed.data.id);
         if (!match) {
             return res.status(404).json({ error: "Match not found" });
         }

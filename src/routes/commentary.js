@@ -1,9 +1,7 @@
 import { Router } from "express";
 import { matchIdParamSchema } from "../validation/matches.js";
 import { listCommentaryQuerySchema } from "../validation/commentary.js";
-import { db } from "../db/db.js";
-import { commentary } from "../db/schema.js";
-import { desc, eq } from "drizzle-orm";
+import { listCommentary } from "../services/commentaryService.js";
 
 export const commentaryRouter = Router({ mergeParams: true });
 
@@ -23,12 +21,7 @@ commentaryRouter.get("/", async (req, res) => {
     const limit = Math.min(queryParsed.data.limit ?? MAX_LIMIT, MAX_LIMIT);
 
     try {
-        const data = await db
-            .select()
-            .from(commentary)
-            .where(eq(commentary.matchId, paramParsed.data.id))
-            .orderBy(desc(commentary.createdAt))
-            .limit(limit);
+        const data = await listCommentary({ matchId: paramParsed.data.id, limit });
         return res.json({ data });
     } catch (error) {
         console.error("GET /matches/:id/commentary error:", error);
