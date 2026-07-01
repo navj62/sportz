@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },
@@ -26,6 +27,8 @@
   "description": "",
   "type": "module",
   "devDependencies": {
-    "drizzle-kit": "^0.31.10"
+    "drizzle-kit": "^0.31.10",
+    "supertest": "^7.2.2",
+    "vitest": "^4.1.9"
   }
 }

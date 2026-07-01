@@ -1,40 +1,16 @@
 import 'dotenv/config';
-import express from 'express';
 import http from 'http';
-import pinoHttp from 'pino-http';
-import { matchesRouter } from './routes/matches.js';
-import { commentaryRouter } from './routes/commentary.js';
-import { healthRouter } from './routes/health.js';
+import { createApp } from './app.js';
 import { attachWebSocketServer } from './ws/server.js';
-import securityMiddleware from './arcjet.js';
 import { startLiveSync, stopLiveSync } from './services/liveSync.js';
-import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './logger.js';
 import { pool } from './db/db.js';
 
 const PORT = process.env.PORT ?? 8000;
 const HOST = process.env.HOST;
 
-const app = express();
+const app = createApp();
 const server = http.createServer(app);
-
-app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/health' } }));
-
-// Health check registered before security middleware — exempt from rate limiting
-app.use('/health', healthRouter);
-
-app.use(express.json());
-app.use(securityMiddleware());
-
-app.get('/', (req, res) => {
-    res.json({ status: 'ok' });
-});
-
-app.use('/matches', matchesRouter);
-app.use('/matches/:id/commentary', commentaryRouter);
-
-// Centralized error handler — must be registered after all routes
-app.use(errorHandler);
 
 const { broadcastLiveScores } = attachWebSocketServer(server);
 
