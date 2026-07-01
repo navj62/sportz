@@ -8,6 +8,20 @@
       "when": 1780547976911,
       "tag": "0000_deep_firebrand",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782541439238,
+      "tag": "0001_hesitant_the_renegades",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782932907630,
+      "tag": "0002_fantastic_molten_man",
+      "breakpoints": true
     }
   ]
 }

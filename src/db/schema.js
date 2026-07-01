@@ -1,4 +1,5 @@
 import {
+  index,
   integer,
   jsonb,
   pgEnum,
@@ -16,6 +17,7 @@ export const matchStatusEnum = pgEnum("match_status", [
 
 export const matches = pgTable("matches", {
   id: serial("id").primaryKey(),
+  externalId: text("external_id").unique(),
   sport: text("sport").notNull(),
   homeTeam: text("home_team").notNull(),
   awayTeam: text("away_team").notNull(),
@@ -27,7 +29,12 @@ export const matches = pgTable("matches", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
-});
+}, (table) => [
+  index("matches_created_at_idx").on(table.createdAt),
+  index("matches_status_idx").on(table.status),
+  index("matches_sport_idx").on(table.sport),
+  index("matches_start_time_idx").on(table.startTime),
+]);
 
 export const commentary = pgTable("commentary", {
   id: serial("id").primaryKey(),
@@ -46,4 +53,6 @@ export const commentary = pgTable("commentary", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
-});
+}, (table) => [
+  index("commentary_match_id_created_at_idx").on(table.matchId, table.createdAt),
+]);
