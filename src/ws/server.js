@@ -1,5 +1,6 @@
 import WebSocket, { WebSocketServer } from "ws";
 import { wsArcjet } from "../arcjet.js";
+import { logger } from "../logger.js";
 
 const matchSubscribers = new Map();
 
@@ -84,7 +85,7 @@ export function attachWebSocketServer(server) {
                     return;
                 }
             } catch (err) {
-                console.error('Arcjet WebSocket protection error:', err);
+                logger.error({ err }, 'Arcjet WebSocket protection error');
                 socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
                 socket.destroy();
                 return;
@@ -105,7 +106,7 @@ export function attachWebSocketServer(server) {
         socket.on('close', () => cleanupSubscriptions(socket));
 
         socket.on('error', (err) => {
-            console.error('WebSocket error:', err);
+            logger.error({ err }, 'WebSocket error');
             socket.terminate();
         });
     });

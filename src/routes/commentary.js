@@ -6,7 +6,7 @@ import { MAX_LIMIT } from "../constants.js";
 
 export const commentaryRouter = Router({ mergeParams: true });
 
-commentaryRouter.get("/", async (req, res) => {
+commentaryRouter.get("/", async (req, res, next) => {
     const paramParsed = matchIdParamSchema.safeParse(req.params);
     if (!paramParsed.success) {
         return res.status(400).json({ error: "Invalid match id", details: paramParsed.error.issues });
@@ -28,7 +28,6 @@ commentaryRouter.get("/", async (req, res) => {
         const nextCursor = data.length === limit ? data[data.length - 1].id : null;
         return res.json({ data, nextCursor });
     } catch (error) {
-        console.error("GET /matches/:id/commentary error:", error);
-        return res.status(500).json({ error: "Internal server error" });
+        next(error);
     }
 });

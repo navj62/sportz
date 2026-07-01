@@ -5,7 +5,7 @@ import { MAX_LIMIT } from "../constants.js";
 
 export const matchesRouter = Router();
 
-matchesRouter.get("/", async (req, res) => {
+matchesRouter.get("/", async (req, res, next) => {
     const parsed = listMatchesQuerySchema.safeParse(req.query);
     if (!parsed.success) {
         return res.status(400).json({ error: "Invalid query", details: parsed.error.issues });
@@ -16,12 +16,11 @@ matchesRouter.get("/", async (req, res) => {
         const nextCursor = data.length === limit ? data[data.length - 1].id : null;
         res.json({ data, nextCursor });
     } catch (error) {
-        console.error("GET /matches error:", error);
-        return res.status(500).json({ error: "Internal server error" });
+        next(error);
     }
 });
 
-matchesRouter.get("/:id", async (req, res) => {
+matchesRouter.get("/:id", async (req, res, next) => {
     const parsed = matchIdParamSchema.safeParse(req.params);
     if (!parsed.success) {
         return res.status(400).json({ error: "Invalid match id", details: parsed.error.issues });
@@ -33,8 +32,7 @@ matchesRouter.get("/:id", async (req, res) => {
         }
         return res.json({ match });
     } catch (error) {
-        console.error(`GET /matches/${parsed.data.id} error:`, error);
-        return res.status(500).json({ error: "Internal server error" });
+        next(error);
     }
 });
 
