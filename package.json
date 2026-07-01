@@ -1,13 +1,12 @@
 {
   "name": "sportz",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js",
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:crud": "node src/index.js"
+    "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
     "@arcjet/inspect": "^1.5.0",
