@@ -1,9 +1,14 @@
 import { Router } from "express";
 import { matchIdParamSchema } from "../validation/matches.js";
 import { listCommentaryQuerySchema } from "../validation/commentary.js";
-import { listCommentary } from "../services/commentaryService.js";
+import { listCommentaryFromEvents } from "../services/eventService.js";
 import { MAX_LIMIT } from "../constants.js";
 
+// DEPRECATED: remove in frontend phase.
+// The commentary table is gone; this reads the events table and synthesizes the
+// `message` string the existing frontend feed still expects. GET
+// /matches/:id/events is the canonical endpoint. Pagination stays id-DESC +
+// cursor so the feed's paging behaviour is unchanged.
 export const commentaryRouter = Router({ mergeParams: true });
 
 commentaryRouter.get("/", async (req, res, next) => {
@@ -20,7 +25,7 @@ commentaryRouter.get("/", async (req, res, next) => {
     const limit = Math.min(queryParsed.data.limit ?? MAX_LIMIT, MAX_LIMIT);
 
     try {
-        const data = await listCommentary({
+        const data = await listCommentaryFromEvents({
             matchId: paramParsed.data.id,
             limit,
             cursor: queryParsed.data.cursor,

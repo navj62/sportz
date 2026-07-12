@@ -11,7 +11,6 @@ export const listMatchesQuerySchema = z
     limit: z.coerce.number().int().positive().max(100).optional(),
     cursor: z.coerce.number().int().positive().optional(),
     status: z.enum(["scheduled", "live", "finished"]).optional(),
-    sport: z.string().min(1).max(100).optional(),
     startTimeFrom: z.iso.datetime().optional(),
     startTimeTo: z.iso.datetime().optional(),
   })

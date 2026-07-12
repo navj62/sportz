@@ -2,6 +2,9 @@ import express from 'express';
 import pinoHttp from 'pino-http';
 import { matchesRouter } from './routes/matches.js';
 import { commentaryRouter } from './routes/commentary.js';
+import { eventsRouter } from './routes/events.js';
+import { competitionsRouter } from './routes/competitions.js';
+import { standingsRouter } from './routes/standings.js';
 import { healthRouter } from './routes/health.js';
 import securityMiddleware from './arcjet.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -23,7 +26,11 @@ export function createApp() {
     });
 
     app.use('/matches', matchesRouter);
+    app.use('/matches/:id/events', eventsRouter);
+    // DEPRECATED: remove in frontend phase — superseded by /matches/:id/events
     app.use('/matches/:id/commentary', commentaryRouter);
+    app.use('/competitions', competitionsRouter);
+    app.use('/competitions/:id/standings', standingsRouter);
 
     // Error handler must be registered last
     app.use(errorHandler);
