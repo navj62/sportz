@@ -7,8 +7,12 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { eq } from 'drizzle-orm';
 import { createApp } from '../src/app.js';
 import { db, pool } from '../src/db/db.js';
-import { matches, commentary } from '../src/db/schema.js';
+import { matches, events, competitions } from '../src/db/schema.js';
 import { errorHandler } from '../src/middleware/errorHandler.js';
+import { upsertMatches } from '../src/services/matchService.js';
+import { replaceMatchEvents } from '../src/services/eventService.js';
+import { upsertCompetitions } from '../src/services/competitionService.js';
+import { upsertStandings } from '../src/services/standingsService.js';
 
 const migrationsFolder = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
@@ -29,7 +33,6 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
         const [match] = await db
             .insert(matches)
             .values({
-                sport: 'Soccer',
                 homeTeam: 'Team A',
                 awayTeam: 'Team B',
                 status: 'scheduled',
@@ -42,17 +45,35 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
         return match;
     }
 
-    async function seedCommentary(matchId, overrides = {}) {
-        const [entry] = await db
-            .insert(commentary)
+    async function seedEvent(matchId, overrides = {}) {
+        const [event] = await db
+            .insert(events)
             .values({
                 matchId,
-                eventType: 'goal',
-                message: 'A goal was scored',
+                minute: 10,
+                type: 'Goal',
+                detail: 'Normal Goal',
+                playerName: 'Saka',
+                teamSide: 'home',
                 ...overrides,
             })
             .returning();
-        return entry;
+        return event;
+    }
+
+    async function seedCompetition(overrides = {}) {
+        const [competition] = await db
+            .insert(competitions)
+            .values({
+                externalId: 'league-1',
+                name: 'Premier League',
+                country: 'England',
+                season: 2026,
+                currentRound: 'Regular Season - 20',
+                ...overrides,
+            })
+            .returning();
+        return competition;
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -64,7 +85,9 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
 
     afterEach(async () => {
         // RESTART IDENTITY resets serial sequences so IDs are predictable
-        await pool.query('TRUNCATE TABLE commentary, matches RESTART IDENTITY CASCADE');
+        await pool.query(
+            'TRUNCATE TABLE events, standings, competitions, matches RESTART IDENTITY CASCADE',
+        );
     });
 
     afterAll(async () => {
@@ -138,16 +161,6 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
         expect(res.body.data[0].status).toBe('live');
     });
 
-    it('GET /matches?sport filters by sport', async () => {
-        await seedMatch({ sport: 'Basketball' });
-        const soccer = await seedMatch({ sport: 'Soccer' });
-
-        const res = await request(app).get('/matches?sport=Soccer');
-        expect(res.status).toBe(200);
-        expect(res.body.data).toHaveLength(1);
-        expect(res.body.data[0].id).toBe(soccer.id);
-    });
-
     it('GET /matches returns 400 with custom message when startTimeTo < startTimeFrom', async () => {
         const res = await request(app).get(
             '/matches?startTimeFrom=2026-06-01T00:00:00Z&startTimeTo=2026-05-01T00:00:00Z',
@@ -170,22 +183,6 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
         expect(res.body).toEqual({ error: 'Match not found' });
     });
 
-    it('GET /matches/:id/commentary cursor excludes entries at or above cursor id', async () => {
-        const match = await seedMatch();
-        const c1 = await seedCommentary(match.id, { message: 'First' });
-        const c2 = await seedCommentary(match.id, { message: 'Second' });
-        const c3 = await seedCommentary(match.id, { message: 'Third' });
-
-        // Cursor at c3.id — only c1 and c2 should come back (ORDER BY id DESC)
-        const res = await request(app).get(`/matches/${match.id}/commentary?cursor=${c3.id}`);
-        expect(res.status).toBe(200);
-        expect(res.body.data).toHaveLength(2);
-        const ids = res.body.data.map((c) => c.id);
-        expect(ids).not.toContain(c3.id);
-        expect(ids).toContain(c2.id);
-        expect(ids).toContain(c1.id);
-    });
-
     it('error handler returns { error: "Internal server error" } — never leaks raw error details', async () => {
         // Isolated test app with a single route that throws a revealing error
         const testApp = express();
@@ -202,9 +199,86 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
         expect(JSON.stringify(res.body)).not.toContain('secret');
     });
 
-    it('liveSync upsert: same externalId updates scores without creating a duplicate row', async () => {
+    // ── Events ────────────────────────────────────────────────────────────────
+
+    it('GET /matches/:id/events returns structured events ordered by minute', async () => {
+        const match = await seedMatch();
+        await seedEvent(match.id, { minute: 63, type: 'Card', detail: 'Yellow Card' });
+        await seedEvent(match.id, { minute: 4, type: 'Goal', detail: 'Own Goal' });
+        await seedEvent(match.id, { minute: 31, type: 'subst', detail: 'Substitution 1' });
+
+        const res = await request(app).get(`/matches/${match.id}/events`);
+        expect(res.status).toBe(200);
+        expect(res.body.data.map((e) => e.minute)).toEqual([4, 31, 63]);
+        expect(res.body.data[0]).toMatchObject({
+            type: 'Goal',
+            detail: 'Own Goal',
+            teamSide: 'home',
+        });
+    });
+
+    it('GET /matches/:id/events returns an empty list for a match with no events', async () => {
+        const match = await seedMatch();
+        const res = await request(app).get(`/matches/${match.id}/events`);
+        expect(res.status).toBe(200);
+        expect(res.body.data).toEqual([]);
+    });
+
+    // ── Deprecated commentary alias ───────────────────────────────────────────
+
+    it('GET /matches/:id/commentary synthesizes a message with minute and player name', async () => {
+        const match = await seedMatch({ homeTeam: 'Arsenal', awayTeam: 'Chelsea' });
+        await seedEvent(match.id, {
+            minute: 63,
+            type: 'Goal',
+            detail: 'Normal Goal',
+            playerName: 'Saka',
+            teamSide: 'home',
+        });
+
+        const res = await request(app).get(`/matches/${match.id}/commentary`);
+        expect(res.status).toBe(200);
+        expect(res.body.data).toHaveLength(1);
+        expect(res.body.data[0].message).toBe("Goal! Saka (Arsenal) 63'");
+    });
+
+    it('GET /matches/:id/commentary omits the player when upstream sent none', async () => {
+        const match = await seedMatch({ homeTeam: 'Arsenal', awayTeam: 'Chelsea' });
+        await seedEvent(match.id, {
+            minute: 70,
+            type: 'Card',
+            detail: 'Yellow Card',
+            playerName: null,
+            teamSide: 'away',
+        });
+
+        const res = await request(app).get(`/matches/${match.id}/commentary`);
+        expect(res.status).toBe(200);
+        // Must not render "null" — ~23% of upstream events carry no player
+        expect(res.body.data[0].message).toBe("Yellow Card (Chelsea) 70'");
+        expect(res.body.data[0].message).not.toContain('null');
+    });
+
+    it('GET /matches/:id/commentary cursor excludes entries at or above cursor id', async () => {
+        const match = await seedMatch();
+        const c1 = await seedEvent(match.id, { minute: 1 });
+        const c2 = await seedEvent(match.id, { minute: 2 });
+        const c3 = await seedEvent(match.id, { minute: 3 });
+
+        // Cursor at c3.id — only c1 and c2 should come back (ORDER BY id DESC)
+        const res = await request(app).get(`/matches/${match.id}/commentary?cursor=${c3.id}`);
+        expect(res.status).toBe(200);
+        expect(res.body.data).toHaveLength(2);
+        const ids = res.body.data.map((c) => c.id);
+        expect(ids).not.toContain(c3.id);
+        expect(ids).toContain(c2.id);
+        expect(ids).toContain(c1.id);
+    });
+
+    // ── liveSync writes ───────────────────────────────────────────────────────
+
+    it('upsertMatches: same externalId updates scores without creating a duplicate row', async () => {
         const base = {
-            sport: 'Soccer',
             homeTeam: 'Team A',
             awayTeam: 'Team B',
             status: /** @type {const} */ ('live'),
@@ -212,23 +286,8 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
             externalId: 'ext-upsert-test',
         };
 
-        // First call — insert
-        await db
-            .insert(matches)
-            .values({ ...base, homeScore: 0, awayScore: 0 })
-            .onConflictDoUpdate({
-                target: matches.externalId,
-                set: { homeScore: 0, awayScore: 0, status: 'live' },
-            });
-
-        // Second call — same externalId, scores updated
-        await db
-            .insert(matches)
-            .values({ ...base, homeScore: 2, awayScore: 1 })
-            .onConflictDoUpdate({
-                target: matches.externalId,
-                set: { homeScore: 2, awayScore: 1, status: 'live' },
-            });
+        await upsertMatches([{ ...base, homeScore: 0, awayScore: 0 }]);
+        await upsertMatches([{ ...base, homeScore: 2, awayScore: 1 }]);
 
         const rows = await db
             .select()
@@ -238,5 +297,126 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
         expect(rows).toHaveLength(1);
         expect(rows[0].homeScore).toBe(2);
         expect(rows[0].awayScore).toBe(1);
+    });
+
+    it('upsertCompetitions: re-running the same payload does not duplicate rows', async () => {
+        const row = {
+            externalId: '129',
+            name: 'Primera Nacional',
+            country: 'Argentina',
+            season: 2026,
+            currentRound: 'Regular Season - 20',
+            logoUrl: null,
+        };
+
+        await upsertCompetitions([row]);
+        await upsertCompetitions([{ ...row, currentRound: 'Regular Season - 21' }]);
+
+        const rows = await db.select().from(competitions);
+        expect(rows).toHaveLength(1);
+        expect(rows[0].currentRound).toBe('Regular Season - 21');
+    });
+
+    it('replaceMatchEvents is idempotent — running twice leaves one set of rows', async () => {
+        const match = await seedMatch();
+        const payload = [
+            { matchId: match.id, minute: 4, type: 'Goal', detail: 'Own Goal', playerName: 'A. Lopez', teamSide: 'away', metadata: null },
+            { matchId: match.id, minute: 63, type: 'Card', detail: 'Yellow Card', playerName: null, teamSide: 'home', metadata: null },
+        ];
+
+        await replaceMatchEvents(match.id, payload);
+        await replaceMatchEvents(match.id, payload);
+
+        const rows = await db.select().from(events).where(eq(events.matchId, match.id));
+        expect(rows).toHaveLength(2);
+    });
+
+    it('replaceMatchEvents removes an event the upstream snapshot no longer contains', async () => {
+        const match = await seedMatch();
+
+        await replaceMatchEvents(match.id, [
+            { matchId: match.id, minute: 4, type: 'Goal', detail: 'Normal Goal', playerName: 'Saka', teamSide: 'home', metadata: null },
+            { matchId: match.id, minute: 30, type: 'Goal', detail: 'Normal Goal', playerName: 'Odegaard', teamSide: 'home', metadata: null },
+        ]);
+
+        // VAR disallows the 30' goal — upstream drops it from the array entirely
+        await replaceMatchEvents(match.id, [
+            { matchId: match.id, minute: 4, type: 'Goal', detail: 'Normal Goal', playerName: 'Saka', teamSide: 'home', metadata: null },
+        ]);
+
+        const rows = await db.select().from(events).where(eq(events.matchId, match.id));
+        expect(rows).toHaveLength(1);
+        expect(rows[0].minute).toBe(4);
+    });
+
+    it('replaceMatchEvents with an empty array clears the match events', async () => {
+        const match = await seedMatch();
+        await seedEvent(match.id);
+
+        await replaceMatchEvents(match.id, []);
+
+        const rows = await db.select().from(events).where(eq(events.matchId, match.id));
+        expect(rows).toHaveLength(0);
+    });
+
+    // ── Competitions and standings ────────────────────────────────────────────
+
+    it('GET /competitions lists competitions in id DESC order', async () => {
+        const c1 = await seedCompetition({ externalId: '39', name: 'Premier League' });
+        const c2 = await seedCompetition({ externalId: '129', name: 'Primera Nacional' });
+
+        const res = await request(app).get('/competitions');
+        expect(res.status).toBe(200);
+        expect(res.body.data[0].id).toBe(c2.id);
+        expect(res.body.data[1].id).toBe(c1.id);
+        expect(res.body.nextCursor).toBeNull();
+    });
+
+    it('GET /competitions/:id/standings returns rows ordered by rank', async () => {
+        const competition = await seedCompetition();
+
+        await upsertStandings([
+            { competitionId: competition.id, season: 2026, rank: 2, teamExternalId: '42', teamName: 'Arsenal', points: 89, goalsDiff: 62, played: 38, win: 28, draw: 5, lose: 5, goalsFor: 91, goalsAgainst: 29 },
+            { competitionId: competition.id, season: 2026, rank: 1, teamExternalId: '50', teamName: 'Man City', points: 91, goalsDiff: 62, played: 38, win: 28, draw: 7, lose: 3, goalsFor: 96, goalsAgainst: 34 },
+        ]);
+
+        const res = await request(app).get(`/competitions/${competition.id}/standings`);
+        expect(res.status).toBe(200);
+        expect(res.body.data.map((r) => r.rank)).toEqual([1, 2]);
+        expect(res.body.data[0].teamName).toBe('Man City');
+    });
+
+    it('upsertStandings is idempotent on (competition, season, team)', async () => {
+        const competition = await seedCompetition();
+        const row = {
+            competitionId: competition.id,
+            season: 2026,
+            rank: 1,
+            teamExternalId: '50',
+            teamName: 'Man City',
+            points: 91,
+            goalsDiff: 62,
+            played: 38,
+            win: 28,
+            draw: 7,
+            lose: 3,
+            goalsFor: 96,
+            goalsAgainst: 34,
+        };
+
+        await upsertStandings([row]);
+        await upsertStandings([{ ...row, rank: 2, points: 88 }]);
+
+        const res = await request(app).get(`/competitions/${competition.id}/standings`);
+        expect(res.body.data).toHaveLength(1);
+        expect(res.body.data[0].rank).toBe(2);
+        expect(res.body.data[0].points).toBe(88);
+    });
+
+    it('GET /competitions/:id/standings returns an empty list when nothing has been synced', async () => {
+        const competition = await seedCompetition();
+        const res = await request(app).get(`/competitions/${competition.id}/standings`);
+        expect(res.status).toBe(200);
+        expect(res.body.data).toEqual([]);
     });
 });
