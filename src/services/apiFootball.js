@@ -228,6 +228,9 @@ export function mapStatus(short) {
     if (LIVE_STATUSES.has(short)) return 'live';
     if (FINISHED_STATUSES.has(short)) return 'finished';
     if (SCHEDULED_STATUSES.has(short)) return 'scheduled';
+    // Surface a new upstream status code in the logs rather than letting it
+    // silently become 'scheduled' and corrupt the data.
+    logger.warn({ status: short }, 'Unknown API-Football status code, defaulting to scheduled');
     return 'scheduled';
 }
 
