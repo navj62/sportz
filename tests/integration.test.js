@@ -79,6 +79,17 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     beforeAll(async () => {
+        // This suite TRUNCATEs. Refuse to run if the pool is not actually pointed
+        // at the test database — a silently-failed redirect in setup.js once let
+        // it truncate the real one.
+        const expected = new URL(process.env.TEST_DATABASE_URL).hostname;
+        const actual = new URL(process.env.DATABASE_URL).hostname;
+        if (expected !== actual) {
+            throw new Error(
+                `Refusing to run: pool points at ${actual}, not the test DB ${expected}`,
+            );
+        }
+
         await migrate(db, { migrationsFolder });
         app = createApp();
     });
