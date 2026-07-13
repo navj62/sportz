@@ -35,28 +35,37 @@ function readConfig() {
 }
 
 export function startLiveSync({ broadcast }) {
-    if (liveTimer || standingsTimer) return;
+    // Guards on the flag, not the timers: between boot and the first scheduled
+    // cycle both timers are still null, so a timer check would let a second
+    // start slip through and run two pollers.
+    if (!stopped) return;
 
     const config = readConfig();
     broadcastFn = broadcast;
     stopped = false;
 
-    // One request at boot, so the logs state unambiguously which quota regime
-    // this process is running under.
-    logApiStatus();
-
-    runLiveCycle(config);
-
-    if (config.standingsEnabled) {
-        runStandingsCycle(config);
-    } else {
-        logger.info('Standings sync disabled (set STANDINGS_SYNC_ENABLED=true to enable)');
-    }
-
     logger.info(
         { liveIntervalMs: config.liveIntervalMs, idleIntervalMs: config.idleIntervalMs },
         'liveSync started',
     );
+
+    if (!config.standingsEnabled) {
+        logger.info('Standings sync disabled (set STANDINGS_SYNC_ENABLED=true to enable)');
+    }
+
+    // One request at boot, so the logs state unambiguously which quota regime this
+    // process is running under. Awaited before the first cycle so the plan and
+    // quota are always the first thing in the log, rather than racing the cycle
+    // that follows — at the cost of delaying the first poll by one request.
+    logApiStatus().then(() => {
+        if (stopped) return;
+
+        runLiveCycle(config);
+
+        if (config.standingsEnabled) {
+            runStandingsCycle(config);
+        }
+    });
 }
 
 export function stopLiveSync() {
