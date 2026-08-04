@@ -244,9 +244,15 @@ describe('apiFootball', () => {
         expect(mapStatus('1H')).toBe('live');
         expect(mapStatus('HT')).toBe('live');
         expect(mapStatus('FT')).toBe('finished');
-        // Postponed/cancelled have no match_status cell; coerced to finished.
-        expect(mapStatus('PST')).toBe('finished');
-        expect(mapStatus('CANC')).toBe('finished');
+        expect(mapStatus('AET')).toBe('finished');
+        expect(mapStatus('PEN')).toBe('finished');
+        // AWD/WO have a real result despite not being a normal full time.
+        expect(mapStatus('AWD')).toBe('finished');
+        expect(mapStatus('WO')).toBe('finished');
+        expect(mapStatus('PST')).toBe('postponed');
+        expect(mapStatus('CANC')).toBe('cancelled');
+        // Abandoned doesn't resume, so it's closer to cancelled than postponed.
+        expect(mapStatus('ABD')).toBe('cancelled');
         // Unknown codes must not throw
         expect(mapStatus('WHAT')).toBe('scheduled');
     });

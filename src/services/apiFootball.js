@@ -77,9 +77,11 @@ import {
 
 const SCHEDULED_STATUSES = new Set(['TBD', 'NS']);
 const LIVE_STATUSES = new Set(['1H', 'HT', '2H', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE']);
-// PST/CANC/ABD are not truly "finished", but match_status has no cell for them.
-// Coercing them here preserves the behaviour the previous provider had.
-const FINISHED_STATUSES = new Set(['FT', 'AET', 'PEN', 'PST', 'CANC', 'ABD', 'AWD', 'WO']);
+const FINISHED_STATUSES = new Set(['FT', 'AET', 'PEN', 'AWD', 'WO']);
+const POSTPONED_STATUSES = new Set(['PST']);
+// ABD (Abandoned) lands here rather than under postponed — an abandoned
+// match doesn't resume, so cancelled is the closer semantic match.
+const CANCELLED_STATUSES = new Set(['CANC', 'ABD']);
 
 /**
  * Read lazily rather than at module load, so importing this module is side-effect
@@ -223,10 +225,12 @@ export async function fetchStandings(leagueId, season) {
     return { rows: groups.flat(), quota };
 }
 
-/** @param {string} short @returns {'scheduled'|'live'|'finished'} */
+/** @param {string} short @returns {'scheduled'|'live'|'finished'|'postponed'|'cancelled'} */
 export function mapStatus(short) {
     if (LIVE_STATUSES.has(short)) return 'live';
     if (FINISHED_STATUSES.has(short)) return 'finished';
+    if (POSTPONED_STATUSES.has(short)) return 'postponed';
+    if (CANCELLED_STATUSES.has(short)) return 'cancelled';
     if (SCHEDULED_STATUSES.has(short)) return 'scheduled';
     // Surface a new upstream status code in the logs rather than letting it
     // silently become 'scheduled' and corrupt the data.
