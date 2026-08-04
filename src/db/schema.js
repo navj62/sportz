@@ -14,6 +14,8 @@ export const matchStatusEnum = pgEnum("match_status", [
   "scheduled",
   "live",
   "finished",
+  "postponed",
+  "cancelled",
 ]);
 
 export const teamSideEnum = pgEnum("team_side", ["home", "away"]);
