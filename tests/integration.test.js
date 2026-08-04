@@ -11,6 +11,7 @@ import { matches, events, competitions } from '../src/db/schema.js';
 import { errorHandler } from '../src/middleware/errorHandler.js';
 import { upsertMatches } from '../src/services/matchService.js';
 import { replaceMatchEvents } from '../src/services/eventService.js';
+import { mapFixtureToEvents } from '../src/services/apiFootball.js';
 import { upsertCompetitions } from '../src/services/competitionService.js';
 import { upsertStandings } from '../src/services/standingsService.js';
 
@@ -233,6 +234,36 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
         const res = await request(app).get(`/matches/${match.id}/events`);
         expect(res.status).toBe(200);
         expect(res.body.data).toEqual([]);
+    });
+
+    it('a substitution fixture event round-trips through the DB with incomingPlayer, not assist', async () => {
+        const match = await seedMatch();
+        const fixture = {
+            teams: {
+                home: { id: 439, name: 'Godoy Cruz' },
+                away: { id: 1067, name: 'Defensores' },
+            },
+            events: [{
+                time: { elapsed: 31, extra: null },
+                team: { id: 439, name: 'Godoy Cruz' },
+                player: { id: 111, name: 'Outgoing Player' },
+                assist: { id: 222, name: 'Incoming Player' },
+                type: 'subst',
+                detail: 'Substitution 1',
+                comments: null,
+            }],
+        };
+
+        await replaceMatchEvents(match.id, mapFixtureToEvents(fixture, match.id));
+
+        const res = await request(app).get(`/matches/${match.id}/events`);
+        expect(res.status).toBe(200);
+        expect(res.body.data[0]).toMatchObject({
+            type: 'subst',
+            playerName: 'Outgoing Player',
+            metadata: { incomingPlayer: 'Incoming Player', comments: null, extra: null },
+        });
+        expect(res.body.data[0].metadata).not.toHaveProperty('assist');
     });
 
     // ── Deprecated commentary alias ───────────────────────────────────────────

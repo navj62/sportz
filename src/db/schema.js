@@ -78,7 +78,9 @@ export const events = pgTable("events", {
   detail: text("detail"),
   playerName: text("player_name"),
   teamSide: teamSideEnum("team_side").notNull(),
-  // Loose extras only: { assist, comments, extra }.
+  // Loose extras only: { assist, incomingPlayer, comments, extra }. assist
+  // and incomingPlayer are mutually exclusive — incomingPlayer is set for
+  // "subst" events, assist for everything else.
   metadata: jsonb("metadata"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()

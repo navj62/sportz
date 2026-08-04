@@ -338,6 +338,23 @@ describe('apiFootball', () => {
         expect(mapFixtureToEvents(noEvents, 42)).toEqual([]);
     });
 
+    it('stores the incoming player under incomingPlayer for substitution events, not assist', () => {
+        const withSubst = {
+            ...FIXTURE,
+            events: [{
+                ...FIXTURE.events[0],
+                type: 'subst',
+                detail: 'Substitution 1',
+                player: { id: 111, name: 'Outgoing Player' },
+                assist: { id: 222, name: 'Incoming Player' },
+            }],
+        };
+        const [event] = mapFixtureToEvents(withSubst, 42);
+        expect(event.playerName).toBe('Outgoing Player');
+        expect(event.metadata).toEqual({ incomingPlayer: 'Incoming Player', comments: null, extra: null });
+        expect(event.metadata).not.toHaveProperty('assist');
+    });
+
     it('flattens standings groups — a cup returns several, a league one', async () => {
         vi.stubGlobal('fetch', vi.fn(async () => envelope([{
             league: {

@@ -281,8 +281,14 @@ export function mapFixtureToEvents(fixture, matchId) {
     const homeTeamId = fixture.teams.home.id;
 
     return (fixture.events ?? []).map((event) => {
+        // For "subst" events, API-Football puts the outgoing player in
+        // event.player and the incoming player in event.assist — so the
+        // field is not an assist at all. Store it under its own name rather
+        // than mislabeling it.
         const metadata = {
-            assist: event.assist?.name ?? null,
+            ...(event.type === 'subst'
+                ? { incomingPlayer: event.assist?.name ?? null }
+                : { assist: event.assist?.name ?? null }),
             comments: event.comments ?? null,
             extra: event.time?.extra ?? null,
         };
