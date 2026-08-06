@@ -12,6 +12,7 @@
   "dependencies": {
     "@arcjet/inspect": "^1.5.0",
     "@arcjet/node": "^1.5.0",
+    "@upstash/redis": "^1.38.2",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
