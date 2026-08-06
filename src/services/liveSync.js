@@ -12,10 +12,13 @@ import { replaceMatchEvents } from './eventService.js';
 import { listCompetitions, upsertCompetitions } from './competitionService.js';
 import { upsertStandings } from './standingsService.js';
 import { logger } from '../logger.js';
+import { acquireLock, releaseLock } from '../redis/client.js';
 import {
     DEFAULT_LIVE_SYNC_IDLE_INTERVAL_MS,
     DEFAULT_LIVE_SYNC_INTERVAL_MS,
     DEFAULT_STANDINGS_SYNC_INTERVAL_MS,
+    LIVE_SYNC_LOCK_KEY,
+    LIVE_SYNC_LOCK_TTL_SECONDS,
     MAX_LIMIT,
 } from '../constants.js';
 
@@ -68,6 +71,19 @@ export function startLiveSync({ broadcast }) {
     });
 }
 
+/**
+ * Test seam. Runs exactly one lock-guarded live poll, with no timers and no
+ * rescheduling, so the lock branches can be driven directly.
+ *
+ * Additive on purpose: pollLiveFixtures is module-private and startLiveSync
+ * only reaches it through a timer behind an awaited status request, which a
+ * unit test should not have to fake. Mirrors __resetRedisClientForTests().
+ * @returns {Promise<number>}
+ */
+export function __pollOnceForTests() {
+    return pollLiveFixtures();
+}
+
 export function stopLiveSync() {
     stopped = true;
 
@@ -118,8 +134,59 @@ async function runLiveCycle(config) {
     liveTimer = setTimeout(() => runLiveCycle(config), delayMs);
 }
 
-/** @returns {Promise<number>} live fixtures seen this cycle */
+/**
+ * Lock guard around syncLiveFixtures. Deliberately wraps the WORK and not
+ * runLiveCycle: the reschedule lives in runLiveCycle, and if a lock skip ever
+ * short-circuited that, one skipped cycle would stop the poller permanently.
+ * Returning 0 instead makes runLiveCycle pick idleIntervalMs, which is the
+ * right back-off — another instance is polling, so we have no live count of our
+ * own and should check back at the cheaper interval.
+ *
+ * On shutdown the release is best-effort by design. index.js calls stopLiveSync
+ * and then process.exit(0) from server.close's callback without awaiting an
+ * in-flight poll, so a SIGTERM that drains faster than a poll kills the process
+ * before this finally runs. The lock's TTL is therefore the EXPECTED reaper on
+ * a normal shutdown, not just a backstop for SIGKILL. That is fine and needs no
+ * fix: an orphaned lock clears within LIVE_SYNC_LOCK_TTL_SECONDS, and fencing
+ * means the next process cannot evict whoever took the key in between.
+ *
+ * Do NOT "fix" this by awaiting the poll in shutdown — that delays every
+ * SIGTERM by up to a full poll for no correctness gain, since fencing plus TTL
+ * already cover it.
+ *
+ * @returns {Promise<number>} live fixtures seen this cycle, 0 if skipped
+ */
 async function pollLiveFixtures() {
+    const lock = await acquireLock(LIVE_SYNC_LOCK_KEY, LIVE_SYNC_LOCK_TTL_SECONDS);
+
+    // Skip ONLY on 'held'. That is the one reason proving another instance is
+    // already spending this cycle's quota.
+    if (lock.reason === 'held') {
+        logger.info({ endpoint: '/fixtures?live=all' }, 'liveSync cycle skipped — another instance holds the poll lock');
+        return 0;
+    }
+
+    // 'error' is not 'held'. Redis being unreachable tells us nothing about
+    // whether a contender exists, and this deploys as a single instance where
+    // there is none — so proceed. The cost of being wrong on a multi-instance
+    // deploy is a duplicated request, not corruption: the upserts are idempotent
+    // and replaceMatchEvents is snapshot-based. The cost of skipping instead
+    // would be a missed cycle every time Redis blips.
+    if (lock.reason === 'error') {
+        logger.warn({ endpoint: '/fixtures?live=all' }, 'liveSync poll lock unavailable, polling without coordination');
+    }
+
+    try {
+        return await syncLiveFixtures();
+    } finally {
+        // Null token on the 'disabled' and 'error' paths, where releaseLock is a
+        // no-op — we never took a lock to give back.
+        await releaseLock(LIVE_SYNC_LOCK_KEY, lock.token);
+    }
+}
+
+/** @returns {Promise<number>} live fixtures seen this cycle */
+async function syncLiveFixtures() {
     const startedAt = Date.now();
     const { fixtures, quota } = await fetchLiveFixtures();
 
@@ -183,6 +250,13 @@ async function pollLiveFixtures() {
 /**
  * Standings run on their own, much slower schedule. This is the only place the
  * competitions table drives requests rather than being populated by them.
+ *
+ * FOLLOWUP — deliberately NOT lock-guarded, unlike pollLiveFixtures. Standings
+ * sync is gated off by default (STANDINGS_SYNC_ENABLED), so a lock here would
+ * guard a path that never runs. If you are turning that flag on, give
+ * pollStandings the same acquireLock/releaseLock treatment first: it spends one
+ * request PER COMPETITION, so on a multi-instance deploy it double-burns far
+ * more quota than the live poller ever could. See FOLLOWUPS.md.
  */
 async function runStandingsCycle(config) {
     try {
