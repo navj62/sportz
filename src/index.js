@@ -5,9 +5,12 @@ import { attachWebSocketServer } from './ws/server.js';
 import { startLiveSync, stopLiveSync } from './services/liveSync.js';
 import { logger } from './logger.js';
 import { pool } from './db/db.js';
+import { initRedis } from './redis/client.js';
 
 const PORT = process.env.PORT ?? 8000;
 const HOST = process.env.HOST;
+
+initRedis();
 
 const app = createApp();
 const server = http.createServer(app);
