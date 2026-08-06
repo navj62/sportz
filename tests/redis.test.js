@@ -18,14 +18,17 @@ const RUN = `test:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 const key = (name) => `${RUN}:${name}`;
 
 describe.skipIf(skip)('Redis client — real Upstash', () => {
+    // Locks are deliberately absent here. Releasing one now requires the token
+    // the acquiring test holds, which is the point of fencing — a tokenless
+    // sweep is exactly the cross-holder delete the script refuses. The tests
+    // that need a key freed release it themselves; the rest are per-run
+    // namespaced with short TTLs and reap on their own.
     afterAll(async () => {
         await Promise.all([
             cacheDel(key('string')),
             cacheDel(key('object')),
             cacheDel(key('ttl')),
             cacheDel(key('del')),
-            releaseLock(key('lock')),
-            releaseLock(key('release')),
         ]);
     });
 
@@ -82,18 +85,68 @@ describe.skipIf(skip)('Redis client — real Upstash', () => {
         expect(await cacheGet(key('del'))).toBeNull();
     });
 
-    it('acquireLock grants once and denies while held', async () => {
-        expect(await acquireLock(key('lock'), 30)).toBe(true);
-        expect(await acquireLock(key('lock'), 30)).toBe(false);
+    it('acquireLock grants once and reports held while held', async () => {
+        const first = await acquireLock(key('lock'), 30);
+        expect(first).toMatchObject({ acquired: true, reason: 'acquired' });
+        expect(typeof first.token).toBe('string');
+
+        // 'held' is the only reason that proves a real contender, and the only
+        // one callers are entitled to skip their work on.
+        expect(await acquireLock(key('lock'), 30)).toEqual({
+            acquired: false,
+            reason: 'held',
+            token: null,
+        });
     });
 
     it('releaseLock lets a later acquireLock succeed', async () => {
-        expect(await acquireLock(key('release'), 30)).toBe(true);
-        expect(await acquireLock(key('release'), 30)).toBe(false);
+        const lock = await acquireLock(key('release'), 30);
+        expect(lock.acquired).toBe(true);
+        expect((await acquireLock(key('release'), 30)).reason).toBe('held');
 
-        await releaseLock(key('release'));
+        await releaseLock(key('release'), lock.token);
 
-        expect(await acquireLock(key('release'), 30)).toBe(true);
+        expect((await acquireLock(key('release'), 30)).acquired).toBe(true);
+    });
+
+    // The fencing guarantee, and the whole reason release is a compare-and-delete
+    // rather than a DEL. Simulates our lock expiring mid-work and a second holder
+    // taking the key: our late release must not evict them. A bare DEL here would
+    // delete a live lock and admit a third caller alongside the second.
+    it('releaseLock with a stale token does not delete another holder\'s lock', async () => {
+        const name = key('fencing');
+
+        // 1s TTL, then let it lapse — the real sequence, not a forged token.
+        const stale = await acquireLock(name, 1);
+        expect(stale.acquired).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+        const current = await acquireLock(name, 30);
+        expect(current.acquired).toBe(true);
+        expect(current.token).not.toBe(stale.token);
+
+        await releaseLock(name, stale.token);
+
+        // Still held by `current` — the stale release was a no-op.
+        expect((await acquireLock(name, 30)).reason).toBe('held');
+
+        await releaseLock(name, current.token);
+        expect((await acquireLock(name, 30)).acquired).toBe(true);
+        await releaseLock(name, (await acquireLock(name, 30)).token);
+    });
+
+    // The disabled and error paths both hand back a null token. Release must
+    // treat that as "we hold nothing" rather than falling through to a delete.
+    it('releaseLock with a null token leaves the lock untouched', async () => {
+        const name = key('null-token');
+
+        const lock = await acquireLock(name, 30);
+        expect(lock.acquired).toBe(true);
+
+        await releaseLock(name, null);
+
+        expect((await acquireLock(name, 30)).reason).toBe('held');
+        await releaseLock(name, lock.token);
     });
 
     // Cache and lock helpers apply different prefixes, so the same bare key in
@@ -102,10 +155,11 @@ describe.skipIf(skip)('Redis client — real Upstash', () => {
         const shared = key('shared-name');
 
         await cacheSet(shared, 'cached', 30);
-        expect(await acquireLock(shared, 30)).toBe(true);
+        const lock = await acquireLock(shared, 30);
+        expect(lock.acquired).toBe(true);
         expect(await cacheGet(shared)).toBe('cached');
 
         await cacheDel(shared);
-        await releaseLock(shared);
+        await releaseLock(shared, lock.token);
     });
 });

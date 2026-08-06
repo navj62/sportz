@@ -41,6 +41,16 @@ vi.mock('@upstash/redis', () => ({
             calls('del', ...args);
             return Promise.reject(new Error('ECONNREFUSED'));
         }
+
+        // releaseLock releases through a compare-and-delete Lua script. Without
+        // this the mock would throw TypeError: eval is not a function, which the
+        // helper's try/catch swallows into the same warn a network failure
+        // produces — so the unreachable-Redis test below would still pass, while
+        // actually exercising a missing method rather than an unreachable host.
+        eval(...args) {
+            calls('eval', ...args);
+            return Promise.reject(new Error('ECONNREFUSED'));
+        }
     },
 }));
 
@@ -102,15 +112,53 @@ describe('Redis client — Redis configured but unreachable', () => {
 
     // Deliberately the opposite of the REDIS_ENABLED=false case below. Redis
     // being configured means another instance may exist and may hold this lock,
-    // so an unreachable Redis must deny rather than assume leadership.
-    it('acquireLock returns false and warns', async () => {
-        await expect(acquireLock('boom', 30)).resolves.toBe(false);
+    // so an unreachable Redis must not assume leadership.
+    //
+    // 'error' rather than 'held' is the load-bearing part: no contender has been
+    // observed, we just could not ask. Callers guarding quota rather than
+    // correctness proceed on 'error' and skip only on 'held'.
+    it('acquireLock reports error with no token, and warns', async () => {
+        await expect(acquireLock('boom', 30)).resolves.toEqual({
+            acquired: false,
+            reason: 'error',
+            token: null,
+        });
         expect(warn).toHaveBeenCalledTimes(1);
     });
 
+    // Passes a token, or the !token guard would return before reaching Redis and
+    // this would assert nothing about the unreachable path.
     it('releaseLock resolves without throwing, and warns', async () => {
-        await expect(releaseLock('boom')).resolves.toBeUndefined();
+        await expect(releaseLock('boom', 'some-token')).resolves.toBeUndefined();
         expect(warn).toHaveBeenCalledTimes(1);
+        expect(calls.mock.calls[0][0]).toBe('eval');
+    });
+
+    // Asserts the !token guard itself, not its consequence. The Lua script would
+    // also refuse a null token — it cannot match the stored value — so a test
+    // that only checked "the lock survived" passes either way and lets the guard
+    // be deleted silently. What the guard uniquely buys is issuing NO command at
+    // all: every disabled or failed acquire would otherwise pay a round trip to
+    // release a lock it never held, and the behavior would hinge on how Upstash
+    // serializes a null ARGV entry.
+    it('releaseLock issues no command when the token is null', async () => {
+        await expect(releaseLock('boom', null)).resolves.toBeUndefined();
+
+        expect(calls).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+    });
+
+    // The fencing contract at the transport level: the token must reach Redis as
+    // an ARGV entry so the comparison happens inside the script, never as a
+    // value read back into JS and compared here.
+    it('releaseLock sends the prefixed key and the token to the Lua script', async () => {
+        await releaseLock('sync', 'tok-123');
+
+        const [command, script, keys, args] = calls.mock.calls[0];
+        expect(command).toBe('eval');
+        expect(script).toContain("redis.call('del', KEYS[1])");
+        expect(keys).toEqual(['sportz:lock:sync']);
+        expect(args).toEqual(['tok-123']);
     });
 
     it('logs the error under the `err` key, matching the logger convention', async () => {
@@ -128,6 +176,29 @@ describe('Redis client — Redis configured but unreachable', () => {
         expect(calls).toHaveBeenNthCalledWith(1, 'get', 'sportz:cache:scores');
         expect(calls.mock.calls[1][0]).toBe('set');
         expect(calls.mock.calls[1][1]).toBe('sportz:lock:sync');
+    });
+
+    // The lock value must be a STRING. The Upstash client stores strings
+    // verbatim but JSON-encodes anything else, and the release script compares
+    // the raw stored bytes against ARGV[1] — so a non-string token would be
+    // written encoded, never match on release, and leave every lock to expire.
+    it('writes the lock value as a string token', async () => {
+        await acquireLock('sync', 30);
+
+        const [, , value, options] = calls.mock.calls[0];
+        expect(typeof value).toBe('string');
+        expect(value.length).toBeGreaterThan(0);
+        expect(options).toEqual({ nx: true, ex: 30 });
+    });
+
+    // Two acquisitions must never produce the same token, or a stale release
+    // from one holder could delete the other's lock — the exact failure the
+    // fencing token exists to prevent.
+    it('generates a distinct token per acquisition', async () => {
+        await acquireLock('sync', 30);
+        await acquireLock('sync', 30);
+
+        expect(calls.mock.calls[0][2]).not.toBe(calls.mock.calls[1][2]);
     });
 });
 
@@ -176,16 +247,32 @@ describe('Redis client — not configured', () => {
     // with, and denying the lock would mean the guarded work never runs at all.
     // This is intentionally NOT symmetric with the unreachable-Redis case above,
     // which returns false — do not "fix" this to match it.
-    it('acquireLock returns TRUE — the single-instance leader fallback', async () => {
-        await expect(acquireLock('anything', 30)).resolves.toBe(true);
+    it('acquireLock grants with acquired TRUE — the single-instance leader fallback', async () => {
+        await expect(acquireLock('anything', 30)).resolves.toEqual({
+            acquired: true,
+            reason: 'disabled',
+            token: null,
+        });
         expect(constructed).not.toHaveBeenCalled();
         expect(calls).not.toHaveBeenCalled();
+    });
+
+    // 'disabled' rather than 'acquired' because no lock was taken. The null token
+    // is what makes the matching releaseLock a no-op instead of a delete of
+    // whatever happens to sit at that key.
+    it('reports reason disabled, not acquired, and hands back no token', async () => {
+        const lock = await acquireLock('anything', 30);
+
+        expect(lock.reason).toBe('disabled');
+        expect(lock.token).toBeNull();
     });
 
     it('cacheSet, cacheDel and releaseLock no-op without building a client', async () => {
         await expect(cacheSet('anything', { a: 1 }, 30)).resolves.toBeUndefined();
         await expect(cacheDel('anything')).resolves.toBeUndefined();
-        await expect(releaseLock('anything')).resolves.toBeUndefined();
+        // Passes a token so the disabled guard is what stops this, not the
+        // !token guard — otherwise this asserts nothing about being disabled.
+        await expect(releaseLock('anything', 'tok')).resolves.toBeUndefined();
 
         expect(constructed).not.toHaveBeenCalled();
         expect(calls).not.toHaveBeenCalled();
@@ -196,7 +283,7 @@ describe('Redis client — not configured', () => {
         await cacheSet('anything', 1, 30);
         await cacheDel('anything');
         await acquireLock('anything', 30);
-        await releaseLock('anything');
+        await releaseLock('anything', 'tok');
 
         expect(warn).not.toHaveBeenCalled();
     });

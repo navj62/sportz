@@ -117,56 +117,91 @@ export async function cacheDel(key) {
 }
 
 /**
+ * Compare-and-delete. Releasing with a bare DEL is wrong under contention: if
+ * our lock has already expired and another holder acquired the same key, a DEL
+ * deletes THEIR lock and admits a third caller while they are still working.
+ * Checking the value first from JS does not fix it either — the check and the
+ * delete would be two round trips with a window in between.
+ *
+ * Upstash's REST API runs this atomically, verified against a live instance:
+ * a non-matching token returns 0 and leaves the key, a matching one returns 1
+ * and deletes it. Note Lua compares the RAW stored bytes, which is why the
+ * token must be a string — the Upstash client stores strings verbatim but
+ * JSON-encodes objects, and an encoded value would never match ARGV[1].
+ */
+const RELEASE_LOCK_SCRIPT = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('del', KEYS[1])
+else
+  return 0
+end
+`;
+
+/**
+ * @typedef {object} LockResult
+ * @property {boolean} acquired Whether the caller may proceed with the guarded work.
+ * @property {'acquired'|'disabled'|'held'|'error'} reason Why. Callers that must
+ *   distinguish "someone else is working" from "we could not coordinate" branch
+ *   on this rather than on `acquired` — only 'held' proves a real contender.
+ * @property {string|null} token Pass to releaseLock. Null whenever we hold no
+ *   real lock, which makes releasing a no-op instead of a wrongful delete.
+ */
+
+/**
  * @param {string} key Bare key; the lock prefix is applied here.
  * @param {number} ttlSeconds Expiry, so a holder that crashes mid-work cannot
  *   wedge the lock permanently.
- * @returns {Promise<boolean>} True if the caller now holds the lock.
+ * @returns {Promise<LockResult>}
  */
 export async function acquireLock(key, ttlSeconds) {
     // Grant the lock when Redis is not configured. This deploys as a single
     // instance, so there is no second contender to coordinate with, and denying
     // the lock would mean the guarded work never runs at all.
     //
-    // Deliberately the opposite of the error path below, which denies. Env vars
-    // being absent is a known single-instance deployment; Redis being present
-    // but unreachable means other instances may exist and may be holding this
-    // lock right now, so the safe answer there is to not act.
+    // Reported as 'disabled' rather than 'acquired' because no lock exists to
+    // release; claiming otherwise would hand callers a token that owns nothing.
     if (!isRedisEnabled()) {
-        return true;
+        return { acquired: true, reason: 'disabled', token: null };
     }
 
+    // Unique per acquisition, so releaseLock can prove the lock it is deleting
+    // is still the one this call created.
+    const token = crypto.randomUUID();
+
     try {
-        const result = await getClient().set(LOCK_PREFIX + key, Date.now(), {
+        const result = await getClient().set(LOCK_PREFIX + key, token, {
             nx: true,
             ex: ttlSeconds,
         });
+
         // SET NX returns 'OK' when it wrote, null when the key already existed.
-        return result === 'OK';
+        return result === 'OK'
+            ? { acquired: true, reason: 'acquired', token }
+            : { acquired: false, reason: 'held', token: null };
     } catch (err) {
-        logger.warn({ err, key }, 'Redis acquireLock failed, treating lock as unavailable');
-        return false;
+        // Distinct from 'held': nobody has been shown to hold this lock, we
+        // simply could not ask. Callers guarding quota rather than correctness
+        // may choose to proceed anyway — see pollLiveFixtures.
+        logger.warn({ err, key }, 'Redis acquireLock failed, lock state unknown');
+        return { acquired: false, reason: 'error', token: null };
     }
 }
 
 /**
  * @param {string} key Bare key; the lock prefix is applied here.
+ * @param {string|null} token The token from the acquireLock that took this lock.
  * @returns {Promise<void>}
  */
-export async function releaseLock(key) {
-    if (!isRedisEnabled()) {
+export async function releaseLock(key, token) {
+    // No token means we never took a real lock — the disabled and error paths
+    // both return null. Returning silently is correct, not a fault worth
+    // warning about: there is nothing of ours to release.
+    if (!isRedisEnabled() || !token) {
         return;
     }
 
     try {
-        // Unconditional DEL, which is wrong under contention: if our lock has
-        // already expired and another holder acquired the same key, this
-        // deletes THEIR lock, admitting a third caller while they are still
-        // working. Tolerable only because nothing acquires locks until Part 3
-        // and this runs as a single instance. Part 3 fixes it by writing a
-        // random token as the lock value and releasing through a
-        // compare-and-delete Lua script that deletes only if the value still
-        // matches ours.
-        await getClient().del(LOCK_PREFIX + key);
+        await getClient().eval(RELEASE_LOCK_SCRIPT, [LOCK_PREFIX + key], [token]);
     } catch (err) {
         logger.warn({ err, key }, 'Redis releaseLock failed, lock will clear on TTL');
     }
