@@ -9,3 +9,15 @@ export const LOCK_PREFIX = 'sportz:lock:';
 // an entry written without expiry outlives whatever made it correct and there
 // is no reaper to clean it up.
 export const DEFAULT_CACHE_TTL_SECONDS = 60;
+
+// Per-endpoint read-cache TTLs, sized against how fast the underlying data can
+// actually change. liveSync is the sole writer and polls at 900s live /
+// 1800s idle, so every value here is well under one write cycle — the cache can
+// only ever serve data the poller has already committed.
+//
+// Match data moves every cycle, so it gets the shortest window. Standings move
+// once per matchday at most. Competitions are near-static: name, country and
+// logo change essentially never, and `currentRound` advances weekly.
+export const MATCHES_CACHE_TTL_SECONDS = 60;
+export const STANDINGS_CACHE_TTL_SECONDS = 300;
+export const COMPETITIONS_CACHE_TTL_SECONDS = 3_600;
