@@ -1,4 +1,5 @@
 import { cacheGet, cacheSet, isRedisEnabled } from './client.js';
+import { CACHE_HEALTH_MIN_CACHEABLE_LOOKUPS } from './constants.js';
 
 /**
  * Read-through cache for the public read endpoints.
@@ -156,7 +157,47 @@ export async function withCache(namespace, params, ttlSeconds, loader) {
  * @returns {{ enabled: boolean, hits: number, misses: number, skipped: number }}
  */
 export function getCacheStats() {
-    return { enabled: isRedisEnabled(), hits, misses, skipped };
+    const enabled = isRedisEnabled();
+    const lookups = hits + misses;
+
+    return {
+        status: cacheStatus(enabled),
+        enabled,
+        hits,
+        misses,
+        skipped,
+        hitRate: lookups === 0 ? 0 : Number((hits / lookups).toFixed(4)),
+    };
+}
+
+/**
+ * Classifies the counters, so the one fault that is otherwise invisible reads
+ * at a glance instead of having to be computed by whoever is looking.
+ *
+ * A cache that is configured but never hitting produces numbers identical to a
+ * cold one — misses, no hits — which is the whole reason this exists. Two
+ * guards stop it crying wolf, and BOTH are load-bearing:
+ *
+ *  - `skipped` is excluded from the denominator. A skipped result is a null
+ *    the cache deliberately refuses to store, so it can never become a hit. A
+ *    404-heavy workload legitimately shows `hits: 0`, and counting those as
+ *    evidence would raise a fault against a perfectly healthy cache.
+ *  - Below CACHE_HEALTH_MIN_CACHEABLE_LOOKUPS the verdict is 'cold', never a
+ *    fault. A freshly started process has no hits yet by definition.
+ *
+ * Delete either guard and a spurious alarm comes back — on 404-heavy traffic,
+ * and on every boot, respectively.
+ *
+ * @param {boolean} enabled
+ * @returns {'disabled'|'cold'|'never-hit'|'ok'}
+ */
+function cacheStatus(enabled) {
+    if (!enabled) return 'disabled';
+
+    const cacheableLookups = hits + (misses - skipped);
+    if (cacheableLookups < CACHE_HEALTH_MIN_CACHEABLE_LOOKUPS) return 'cold';
+
+    return hits === 0 ? 'never-hit' : 'ok';
 }
 
 /**

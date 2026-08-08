@@ -21,3 +21,15 @@ export const DEFAULT_CACHE_TTL_SECONDS = 60;
 export const MATCHES_CACHE_TTL_SECONDS = 60;
 export const STANDINGS_CACHE_TTL_SECONDS = 300;
 export const COMPETITIONS_CACHE_TTL_SECONDS = 3_600;
+
+// Bounds the debug endpoint's Redis ping. The Upstash REST client carries no
+// deadline of its own, so without this an unresponsive instance would hang
+// /debug/stats. Sized against a measured round trip of roughly 800ms: loose
+// enough that a healthy-but-slow instance is not called unreachable, tight
+// enough that the endpoint stays usable while Redis is wedged.
+export const REDIS_PING_TIMEOUT_MS = 2_000;
+
+// Below this many CACHEABLE lookups — hits plus the misses that were actually
+// stored — a hit count of zero means the process is young, not that the cache
+// is broken. The health status reports 'cold' rather than raising a fault.
+export const CACHE_HEALTH_MIN_CACHEABLE_LOOKUPS = 20;

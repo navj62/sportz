@@ -252,7 +252,17 @@ describe('withCache — Redis disabled', () => {
         await withCache('matches:list', { limit: 10 }, 60, vi.fn().mockResolvedValue([{ id: 1 }]));
         await withCache('matches:list', { limit: 25 }, 60, vi.fn().mockResolvedValue([{ id: 2 }]));
 
-        expect(getCacheStats()).toEqual({ enabled: false, hits: 0, misses: 0, skipped: 0 });
+        // Kept as an exact-shape assertion rather than loosened to
+        // toMatchObject: it is the one test that would catch an unintended
+        // field appearing in the stats seam.
+        expect(getCacheStats()).toEqual({
+            status: 'disabled',
+            enabled: false,
+            hits: 0,
+            misses: 0,
+            skipped: 0,
+            hitRate: 0,
+        });
     });
 });
 

@@ -1,6 +1,25 @@
 import { Redis } from '@upstash/redis';
 import { logger } from '../logger.js';
-import { CACHE_PREFIX, LOCK_PREFIX, DEFAULT_CACHE_TTL_SECONDS } from './constants.js';
+import {
+    CACHE_PREFIX,
+    LOCK_PREFIX,
+    DEFAULT_CACHE_TTL_SECONDS,
+    REDIS_PING_TIMEOUT_MS,
+} from './constants.js';
+
+/**
+ * Lock outcome counters, read by /debug/stats.
+ *
+ * Counted here rather than in liveSync because this is where the four reasons
+ * are produced. Counting at a caller's branch would re-derive the information
+ * at a distance, and liveSync never inspects 'acquired' or 'disabled' at all —
+ * it would have to grow branches purely to count.
+ *
+ * Aggregated across lock KEYS, not per key. With a single key
+ * (LIVE_SYNC_LOCK_KEY) that is exact; a second lock would silently conflate
+ * the two. Keying is deferred until a second key exists — see FOLLOWUPS.
+ */
+let lockOutcomes = { acquired: 0, held: 0, error: 0, disabled: 0 };
 
 /**
  * Memoized so we build one client per process rather than one per call. Reset
@@ -161,6 +180,7 @@ export async function acquireLock(key, ttlSeconds) {
     // Reported as 'disabled' rather than 'acquired' because no lock exists to
     // release; claiming otherwise would hand callers a token that owns nothing.
     if (!isRedisEnabled()) {
+        lockOutcomes.disabled += 1;
         return { acquired: true, reason: 'disabled', token: null };
     }
 
@@ -175,10 +195,15 @@ export async function acquireLock(key, ttlSeconds) {
         });
 
         // SET NX returns 'OK' when it wrote, null when the key already existed.
-        return result === 'OK'
-            ? { acquired: true, reason: 'acquired', token }
-            : { acquired: false, reason: 'held', token: null };
+        if (result === 'OK') {
+            lockOutcomes.acquired += 1;
+            return { acquired: true, reason: 'acquired', token };
+        }
+
+        lockOutcomes.held += 1;
+        return { acquired: false, reason: 'held', token: null };
     } catch (err) {
+        lockOutcomes.error += 1;
         // Distinct from 'held': nobody has been shown to hold this lock, we
         // simply could not ask. Callers guarding quota rather than correctness
         // may choose to proceed anyway — see pollLiveFixtures.
@@ -208,10 +233,80 @@ export async function releaseLock(key, token) {
 }
 
 /**
+ * @returns {{ acquired: number, held: number, error: number, disabled: number,
+ *   errorRate: number }} Cumulative since process start.
+ */
+export function getLockStats() {
+    const { acquired, held, error, disabled } = lockOutcomes;
+    const total = acquired + held + error + disabled;
+
+    return {
+        acquired,
+        held,
+        error,
+        disabled,
+        // A rising error rate is the only signal that the lock has stopped
+        // coordinating anything — 'error' means we could not even ask whether
+        // a contender exists, and the poll proceeds uncoordinated.
+        errorRate: total === 0 ? 0 : Number((error / total).toFixed(4)),
+    };
+}
+
+/**
+ * Availability probe for the debug endpoint. Never throws, like every helper
+ * in this module.
+ *
+ * Bounded by a timeout because the Upstash REST client has no deadline of its
+ * own, so an unresponsive instance would otherwise hang /debug/stats. A
+ * timeout reports 'unreachable' rather than a fourth state: to a caller, a
+ * ping that never lands and one that fails are the same fact.
+ *
+ * Deliberately NOT used by /health. Redis is optional, /health is a liveness
+ * probe for the app's real dependency, and hanging an external call of roughly
+ * 800ms off that path would let a slow Redis trip a platform's own health
+ * timeout — failing the check by latency while faithfully reporting Redis as
+ * merely advisory. The cleanest guarantee that Redis can never fail /health is
+ * that /health never touches Redis.
+ *
+ * @param {number} [timeoutMs]
+ * @returns {Promise<'ok'|'unreachable'|'disabled'>}
+ */
+export async function redisPing(timeoutMs = REDIS_PING_TIMEOUT_MS) {
+    if (!isRedisEnabled()) {
+        return 'disabled';
+    }
+
+    let timer;
+    try {
+        const expiry = new Promise((_resolve, reject) => {
+            timer = setTimeout(
+                () => reject(new Error(`Redis ping timed out after ${timeoutMs}ms`)),
+                timeoutMs,
+            );
+        });
+
+        await Promise.race([getClient().ping(), expiry]);
+        return 'ok';
+    } catch (err) {
+        logger.warn({ err }, 'Redis ping failed, reporting unreachable');
+        return 'unreachable';
+    } finally {
+        // Without this the pending timer keeps the event loop alive for up to
+        // timeoutMs after a successful ping.
+        clearTimeout(timer);
+    }
+}
+
+/**
  * Test seam. Drops the memoized client so a suite can change the Upstash env
  * vars and have the next call build a client against the new values.
  * @returns {void}
  */
 export function __resetRedisClientForTests() {
     client = null;
+}
+
+/** Test seam. Mirrors __resetCacheStatsForTests() in cache.js. @returns {void} */
+export function __resetLockStatsForTests() {
+    lockOutcomes = { acquired: 0, held: 0, error: 0, disabled: 0 };
 }
