@@ -16,6 +16,10 @@ own CLAUDE.md — this file covers the backend only.
   `replaceMatchEvents`. If data needs to change, it changes there.
 - **Every HTTP route is a GET.** No write endpoints, and no auth — both
   intentional (see Deliberate decisions).
+- **Public reads go through a TTL-only cache**, applied in the services via
+  `withCache`. `liveSync` writes invalidate nothing, so staleness is bounded by
+  the TTL — always far shorter than the poll interval. The deprecated
+  commentary alias is deliberately uncached.
 - **One `/fixtures?live=all` request yields fixtures, leagues AND events.**
   Competitions and events fall out of that single payload; neither is fetched
   on its own. Adding a per-fixture request multiplies quota cost by the number
@@ -50,6 +54,13 @@ it.
 `DATABASE_URL` to `TEST_DATABASE_URL`, and the integration suite's `beforeAll`
 compares the two hostnames and throws rather than run. That guard exists
 because the redirect once silently no-opped. Never weaken it.
+
+**Suites that TRUNCATE share one test database, so test files run
+serialized.** `fileParallelism` is off in `vitest.config.js` for exactly this
+reason: two truncating suites running in parallel wipe each other's rows
+mid-test, and the failures read as assertion bugs rather than interference —
+each file passes alone and fails alongside the other. A new truncating suite
+either inherits that serialization or needs its own database.
 
 **Redis helpers never throw.** Graceful degradation is contractual: every
 helper in `src/redis/client.js` catches, warns, and returns a safe value. A
@@ -147,11 +158,9 @@ These come from things that have actually gone wrong here.
 
 ## Known gaps
 
-- **`cacheGet` / `cacheSet` / `cacheDel` are implemented and tested but wired to
-  nothing.** No caller exists in `src/`; only `acquireLock`/`releaseLock` are in
-  use. `.env.example` advertises an "endpoint cache" that does not exist yet —
-  it arrives in the caching part of the current work. Don't assume reads are
-  cached.
+- **`cacheDel` has no production caller.** Invalidation is TTL-only by design
+  (see the cache layer and `FOLLOWUPS.md`), so nothing in `src/` deletes a cache
+  entry. It is implemented and tested; don't assume it is dead code.
 
 ## Where things live
 
