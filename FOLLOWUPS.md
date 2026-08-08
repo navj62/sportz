@@ -136,3 +136,42 @@ Also unexposed: cache hit/miss rates, and how often the poll lock is skipped
 (`'held'`) versus proceeding uncoordinated (`'error'`). That last pair is the
 one worth having — a rising `'error'` rate is the only signal that the lock has
 silently stopped coordinating anything.
+
+---
+
+## 8. Explicit cache invalidation on write
+
+**Trigger: the live poll interval dropping below the cache TTL, a writer other
+than `liveSync` appearing, or a product requirement for sub-TTL freshness.**
+
+The read cache added in the caching pass is TTL-only: `liveSync` writes to the
+database and nothing tells the cache. That is a decision, not an omission, and
+`src/redis/cache.js` documents it at the point where someone would go looking
+for the missing invalidation.
+
+It holds because the write cadence is far slower than any TTL here. The poller
+runs at 900s live / 1800s idle against TTLs of 60s, 300s and 3600s, so the
+worst staleness a reader can see is one TTL against data that changes at most
+every 15 minutes. Explicit invalidation would buy an improvement nobody can
+observe.
+
+The reason it is not merely unnecessary but actively risky: cache keys encode
+the FULL query parameter set, so there is no bounded list of keys to delete
+after a write. `/matches` alone varies over five dimensions, and every distinct
+filter combination a client has issued is its own entry. An invalidation that
+clears four of five variants is a silent stale-read bug — precisely the
+key-completeness failure the whole-object keying was designed to make
+impossible, reintroduced on the write side where it is much harder to test.
+
+Doing it properly means one of:
+
+- a prefix scan and delete (`sportz:cache:matches:*`) after each write cycle,
+  which is coarse but has no enumeration problem; or
+- tracking written keys in a Redis set per namespace, and clearing the set on
+  write — more precise, more moving parts, and the set itself can drift.
+
+Prefer the prefix scan if this becomes due. Do not hand-enumerate key variants.
+
+Worth pairing with the cache hit/miss observability in followup 7: a staleness
+complaint is very hard to diagnose without knowing whether reads are being
+served from cache at all.
