@@ -125,5 +125,41 @@ export function attachWebSocketServer(server) {
         broadcastToAll(wss, payload);
     }
 
-    return { broadcastLiveScores };
+    /**
+     * Closes the server and stops the heartbeat.
+     *
+     * Deliberately NOT wired into index.js: production shutdown is
+     * process.exit(0) from server.close's callback, which is a documented
+     * decision, and routing it through here would change it for no gain.
+     *
+     * It exists because the ping interval above is cleared only by wss's
+     * 'close' event, and with `noServer: true` closing the HTTP server does not
+     * emit it. A test creating a server per case would otherwise leak a 30s
+     * timer every time and hold the runner open.
+     */
+    function close() {
+        for (const client of wss.clients) {
+            client.terminate();
+        }
+        return new Promise((resolve) => wss.close(() => resolve()));
+    }
+
+    return { broadcastLiveScores, close };
+}
+
+/**
+ * Test seams. Mirror __resetRedisClientForTests() in redis/client.js.
+ *
+ * matchSubscribers is module-level rather than per-server, so a suite that
+ * builds a server per test case would otherwise carry one case's subscriptions
+ * into the next.
+ * @returns {void}
+ */
+export function __resetSubscribersForTests() {
+    matchSubscribers.clear();
+}
+
+/** @param {number} matchId @returns {number} sockets currently subscribed */
+export function __subscriberCountForTests(matchId) {
+    return matchSubscribers.get(matchId)?.size ?? 0;
 }
