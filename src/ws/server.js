@@ -52,11 +52,73 @@ function sendJson(socket, payload) {
     socket.send(JSON.stringify(payload));
 }
 
-function broadcastToAll(wss, payload) {
-    const message = JSON.stringify(payload);
+/**
+ * Narrows a broadcast's match array to what this socket actually asked for.
+ *
+ * ── AN EMPTY SUBSCRIPTION SET MEANS *ALL* MATCHES, NOT NONE ──────────────────
+ * This reads backwards at first glance, and "correcting" it to empty-means-none
+ * would be a silent, total outage of live updates. Do not.
+ *
+ * Nothing in the frontend sends a `subscribe` frame — its exported subscribe()
+ * registers a local listener and never touches the wire, so in production
+ * EVERY socket has an empty set. Under empty-means-none the server would
+ * deliver nothing to anyone: no error, no closed socket, no failed request,
+ * just scores that quietly stop moving. There is no signal that would catch it.
+ *
+ * It is also the right semantic independently of that. The match list renders
+ * ~20 paginated matches and would have to subscribe to every visible id and
+ * re-subscribe on each filter change or page load; it genuinely wants the whole
+ * feed. Per-match filtering is for the detail view, which follows one match.
+ * So: no subscriptions means "everything", and a subscription is an opt-in
+ * narrowing.
+ *
+ * Returns the SAME array reference when nothing is narrowed, which lets the
+ * caller reuse one serialization for every unsubscribed socket.
+ *
+ * @param {import('ws').WebSocket} socket
+ * @param {Array<{ id: number }>} data
+ * @returns {Array<{ id: number }>|null} matches to send, or null to send nothing
+ */
+function subscribedMatches(socket, data) {
+    if (!socket.subscriptions || socket.subscriptions.size === 0) {
+        return data;
+    }
+
+    const filtered = data.filter((match) => socket.subscriptions.has(match.id));
+
+    // An empty result carries no information, so skip the frame entirely rather
+    // than sending `data: []`.
+    return filtered.length > 0 ? filtered : null;
+}
+
+function broadcast(wss, payload) {
+    // Serialized at most once and reused by every socket receiving the whole
+    // payload. Today that is every socket, so this costs exactly what the
+    // unfiltered broadcast did — a subscription is what pays for its own
+    // filtering, and adding this feature adds no overhead until one exists.
+    let fullMessage;
+    const sendFull = (client) => {
+        fullMessage ??= JSON.stringify(payload);
+        client.send(fullMessage);
+    };
+
     for (const client of wss.clients) {
         if (client.readyState !== WebSocket.OPEN) continue;
-        client.send(message);
+
+        // Only match arrays are narrowable; anything else goes out whole.
+        if (!Array.isArray(payload.data)) {
+            sendFull(client);
+            continue;
+        }
+
+        const data = subscribedMatches(client, payload.data);
+        if (data === null) continue;
+
+        if (data === payload.data) {
+            sendFull(client);
+        } else {
+            client.send(JSON.stringify({ ...payload, data }));
+        }
     }
 }
 
@@ -122,7 +184,7 @@ export function attachWebSocketServer(server) {
     wss.on('close', () => clearInterval(interval));
 
     function broadcastLiveScores(payload) {
-        broadcastToAll(wss, payload);
+        broadcast(wss, payload);
     }
 
     /**
