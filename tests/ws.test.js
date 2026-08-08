@@ -74,6 +74,17 @@ function send(socket, payload) {
     socket.send(JSON.stringify(payload));
 }
 
+/**
+ * Selects broadcast frames by type rather than by array index — a subscribe
+ * acknowledgement lands between the welcome and the broadcast, so indices shift
+ * depending on what a test sent.
+ */
+function liveFrames(messages) {
+    return messages.filter((message) => message.type === 'live_scores');
+}
+
+const idsOf = (frame) => frame.data.map((match) => match.id);
+
 beforeEach(async () => {
     __resetSubscribersForTests();
 
@@ -241,5 +252,134 @@ describe('WebSocket server — malformed input', () => {
 
         expect(await waitFor(() => messages.length >= 2, 200)).toBe(false);
         expect(__subscriberCountForTests(42)).toBe(0);
+    });
+});
+
+// The filtering path does not execute in normal use — nothing in the frontend
+// sends a subscribe frame — so these tests are the only thing exercising it.
+describe('WebSocket server — per-match filtering', () => {
+    it('delivers only the subscribed match to a subscribed socket', async () => {
+        const { socket, messages } = await openClient();
+
+        send(socket, { type: 'subscribe', matchId: 42 });
+        await waitFor(() => __subscriberCountForTests(42) === 1);
+
+        broadcastLiveScores(PAYLOAD);
+
+        expect(await waitFor(() => liveFrames(messages).length >= 1)).toBe(true);
+        // Exactly the subscribed match — not merely "a frame arrived".
+        expect(liveFrames(messages)[0].data).toHaveLength(1);
+        expect(idsOf(liveFrames(messages)[0])).toEqual([42]);
+    });
+
+    // Proves the narrowing is PER SOCKET rather than applied to the broadcast
+    // as a whole: one payload, two sockets, two different results.
+    it('filters per socket — subscribed and unsubscribed differ in the same broadcast', async () => {
+        const narrowed = await openClient();
+        const everything = await openClient();
+
+        send(narrowed.socket, { type: 'subscribe', matchId: 42 });
+        await waitFor(() => __subscriberCountForTests(42) === 1);
+
+        broadcastLiveScores(PAYLOAD);
+
+        expect(await waitFor(() =>
+            liveFrames(narrowed.messages).length >= 1 && liveFrames(everything.messages).length >= 1,
+        )).toBe(true);
+
+        expect(idsOf(liveFrames(narrowed.messages)[0])).toEqual([42]);
+        expect(idsOf(liveFrames(everything.messages)[0])).toEqual([42, 7, 99]);
+    });
+
+    it('gives two differently-subscribed sockets their own matches', async () => {
+        const a = await openClient();
+        const b = await openClient();
+
+        send(a.socket, { type: 'subscribe', matchId: 42 });
+        send(b.socket, { type: 'subscribe', matchId: 99 });
+        await waitFor(() =>
+            __subscriberCountForTests(42) === 1 && __subscriberCountForTests(99) === 1,
+        );
+
+        broadcastLiveScores(PAYLOAD);
+
+        expect(await waitFor(() =>
+            liveFrames(a.messages).length >= 1 && liveFrames(b.messages).length >= 1,
+        )).toBe(true);
+
+        expect(idsOf(liveFrames(a.messages)[0])).toEqual([42]);
+        expect(idsOf(liveFrames(b.messages)[0])).toEqual([99]);
+    });
+
+    it('delivers every subscribed match, in payload order', async () => {
+        const { socket, messages } = await openClient();
+
+        send(socket, { type: 'subscribe', matchId: 99 });
+        send(socket, { type: 'subscribe', matchId: 42 });
+        await waitFor(() =>
+            __subscriberCountForTests(42) === 1 && __subscriberCountForTests(99) === 1,
+        );
+
+        broadcastLiveScores(PAYLOAD);
+
+        expect(await waitFor(() => liveFrames(messages).length >= 1)).toBe(true);
+        // Payload order (42, 7, 99), not subscription order (99, 42).
+        expect(idsOf(liveFrames(messages)[0])).toEqual([42, 99]);
+    });
+
+    it('sends no frame at all when the cycle holds none of the subscribed matches', async () => {
+        const { socket, messages } = await openClient();
+
+        send(socket, { type: 'subscribe', matchId: 1234 });
+        await waitFor(() => __subscriberCountForTests(1234) === 1);
+
+        broadcastLiveScores(PAYLOAD);
+
+        // An empty data array carries no information, so nothing is sent.
+        expect(await waitFor(() => liveFrames(messages).length >= 1, 250)).toBe(false);
+    });
+
+    it('keeps the live_scores shape on a filtered frame', async () => {
+        const { socket, messages } = await openClient();
+
+        send(socket, { type: 'subscribe', matchId: 42 });
+        await waitFor(() => __subscriberCountForTests(42) === 1);
+
+        broadcastLiveScores(PAYLOAD);
+
+        await waitFor(() => liveFrames(messages).length >= 1);
+        const [frame] = liveFrames(messages);
+        expect(frame.type).toBe('live_scores');
+        expect(Array.isArray(frame.data)).toBe(true);
+        expect(frame.data[0]).toEqual({ id: 42, homeTeam: 'Arsenal', homeScore: 1 });
+    });
+});
+
+// The backward-compatibility guarantee, stated as its own case rather than
+// left implicit in the baseline suite. Every production socket is empty-set,
+// so empty-means-ALL is what the live frontend depends on; empty-means-none
+// would freeze it silently.
+describe('WebSocket server — an empty subscription set means ALL matches', () => {
+    it('a socket that never subscribed receives the whole payload', async () => {
+        const { messages } = await openClient();
+
+        broadcastLiveScores(PAYLOAD);
+
+        expect(await waitFor(() => liveFrames(messages).length >= 1)).toBe(true);
+        expect(idsOf(liveFrames(messages)[0])).toEqual([42, 7, 99]);
+    });
+
+    it('unsubscribing back to an empty set restores the whole payload', async () => {
+        const { socket, messages } = await openClient();
+
+        send(socket, { type: 'subscribe', matchId: 42 });
+        await waitFor(() => __subscriberCountForTests(42) === 1);
+        send(socket, { type: 'unsubscribe', matchId: 42 });
+        await waitFor(() => __subscriberCountForTests(42) === 0);
+
+        broadcastLiveScores(PAYLOAD);
+
+        expect(await waitFor(() => liveFrames(messages).length >= 1)).toBe(true);
+        expect(idsOf(liveFrames(messages)[0])).toEqual([42, 7, 99]);
     });
 });
