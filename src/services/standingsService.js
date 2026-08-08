@@ -1,17 +1,24 @@
 import { db } from '../db/db.js';
 import { standings } from '../db/schema.js';
 import { and, asc, eq, sql } from 'drizzle-orm';
+import { withCache } from '../redis/cache.js';
+import { STANDINGS_CACHE_TTL_SECONDS } from '../redis/constants.js';
 
-export async function listStandingsByCompetition({ competitionId, season }) {
-    const conditions = [eq(standings.competitionId, competitionId)];
+/** A table moves once per matchday at most, so it sits between the other two TTLs. */
+export async function listStandingsByCompetition(params) {
+    const { competitionId, season } = params;
 
-    if (season !== undefined) conditions.push(eq(standings.season, season));
+    return withCache('standings:byCompetition', params, STANDINGS_CACHE_TTL_SECONDS, () => {
+        const conditions = [eq(standings.competitionId, competitionId)];
 
-    return db
-        .select()
-        .from(standings)
-        .where(and(...conditions))
-        .orderBy(asc(standings.groupName), asc(standings.rank));
+        if (season !== undefined) conditions.push(eq(standings.season, season));
+
+        return db
+            .select()
+            .from(standings)
+            .where(and(...conditions))
+            .orderBy(asc(standings.groupName), asc(standings.rank));
+    });
 }
 
 /**

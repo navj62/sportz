@@ -1,18 +1,34 @@
 import { db } from '../db/db.js';
 import { competitions } from '../db/schema.js';
 import { and, desc, lt, sql } from 'drizzle-orm';
+import { withCache } from '../redis/cache.js';
+import { COMPETITIONS_CACHE_TTL_SECONDS } from '../redis/constants.js';
 
-export async function listCompetitions({ limit, cursor }) {
-    const conditions = [];
+/**
+ * The longest TTL of the five: a competition's name, country and logo change
+ * essentially never, and `currentRound` advances about once a week.
+ *
+ * Note this has an internal caller as well as the route — pollStandings reads
+ * it to decide which competitions to fetch standings for, so it reads through
+ * the same cache. Harmless: standings sync runs hourly and is off by default,
+ * so the worst case is a newly-added competition waiting up to one TTL for its
+ * first standings fetch.
+ */
+export async function listCompetitions(params) {
+    const { limit, cursor } = params;
 
-    if (cursor !== undefined) conditions.push(lt(competitions.id, cursor));
+    return withCache('competitions:list', params, COMPETITIONS_CACHE_TTL_SECONDS, () => {
+        const conditions = [];
 
-    return db
-        .select()
-        .from(competitions)
-        .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .orderBy(desc(competitions.id))
-        .limit(limit);
+        if (cursor !== undefined) conditions.push(lt(competitions.id, cursor));
+
+        return db
+            .select()
+            .from(competitions)
+            .where(conditions.length > 0 ? and(...conditions) : undefined)
+            .orderBy(desc(competitions.id))
+            .limit(limit);
+    });
 }
 
 /**

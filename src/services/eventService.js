@@ -1,14 +1,20 @@
 import { db } from '../db/db.js';
 import { events, matches } from '../db/schema.js';
 import { and, asc, desc, eq, lt } from 'drizzle-orm';
+import { withCache } from '../redis/cache.js';
+import { MATCHES_CACHE_TTL_SECONDS } from '../redis/constants.js';
 
-export async function listEventsByMatch({ matchId, limit }) {
-    return db
-        .select()
-        .from(events)
-        .where(eq(events.matchId, matchId))
-        .orderBy(asc(events.minute), asc(events.id))
-        .limit(limit);
+/** Shares the match TTL: events change on the same poll cycle the scores do. */
+export async function listEventsByMatch(params) {
+    const { matchId, limit } = params;
+
+    return withCache('matches:events', params, MATCHES_CACHE_TTL_SECONDS, () =>
+        db
+            .select()
+            .from(events)
+            .where(eq(events.matchId, matchId))
+            .orderBy(asc(events.minute), asc(events.id))
+            .limit(limit));
 }
 
 /**

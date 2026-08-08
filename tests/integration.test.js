@@ -79,7 +79,32 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
+    // Saved so afterAll can put them back; see the disable below.
+    const upstashUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+
     beforeAll(async () => {
+        // Run these against Postgres directly, with the read cache switched
+        // OFF. Two reasons, both about keeping the suite meaningful:
+        //
+        // 1. This suite TRUNCATEs after every test, which the cache knows
+        //    nothing about. A cached list survives the truncate and the next
+        //    test reads the previous test's rows — the failures are real, but
+        //    they are an artifact of truncating behind the cache's back, not a
+        //    production bug. Nothing truncates the database in production.
+        // 2. More importantly, with the cache in front, a passing assertion no
+        //    longer proves the DB query is correct — it may be served from an
+        //    earlier test's entry. Disabling restores the thing this suite
+        //    exists to test.
+        //
+        // Deleting the env vars is enough because isRedisEnabled() re-reads
+        // them on every call; that lazy read is exactly what makes this
+        // controllable from a test. The cached read path has its own coverage:
+        // withCache is unit-tested in cache.test.js, and the route-level
+        // hit/miss behaviour in cachedReads.test.js.
+        delete process.env.UPSTASH_REDIS_REST_URL;
+        delete process.env.UPSTASH_REDIS_REST_TOKEN;
+
         // This suite TRUNCATEs. Refuse to run if the pool is not actually pointed
         // at the test database — a silently-failed redirect in setup.js once let
         // it truncate the real one.
@@ -103,6 +128,11 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
     });
 
     afterAll(async () => {
+        // Restore, so disabling Redis cannot leak into anything that runs after
+        // this file in the same process.
+        if (upstashUrl !== undefined) process.env.UPSTASH_REDIS_REST_URL = upstashUrl;
+        if (upstashToken !== undefined) process.env.UPSTASH_REDIS_REST_TOKEN = upstashToken;
+
         await pool.end();
     });
 
