@@ -24,9 +24,13 @@ own CLAUDE.md — this file covers the backend only.
   Competitions and events fall out of that single payload; neither is fetched
   on its own. Adding a per-fixture request multiplies quota cost by the number
   of live matches.
-- WebSocket lives at `/ws`. Clients can subscribe per match, but
-  `broadcastLiveScores` sends to **every** connected socket — the subscription
-  map does not filter it. Don't assume a subscribe narrows what a client gets.
+- WebSocket lives at `/ws`. `broadcastLiveScores` filters each socket's
+  matches by its subscription set — but an **empty** set means **all**
+  matches, not none; only a non-empty set narrows to those match ids. Nothing
+  in the frontend ever sends a `subscribe` frame, so every production socket
+  has an empty set — the list page's live updates depend on empty-means-all.
+  Do not "fix" this to empty-means-none. See `subscribedMatches` in
+  `src/ws/server.js`.
 
 ## Hard invariants
 
@@ -148,9 +152,13 @@ These come from things that have actually gone wrong here.
   integration and real-Redis suites `skipIf` on a missing env var, so a green
   summary can mean nothing ran. A vacuous pass is a silent failure.
 - **Mutation-test safety-critical code.** Break the guard deliberately, confirm
-  the *right* test fails *by name*, then revert. Assert on mechanism, not just
-  outcome — a second code path can produce the same outcome and hide a deleted
-  guard.
+  the *right* test fails *by name*, then revert and confirm byte-identical.
+  Assert on mechanism, not just outcome — a second code path can produce the
+  same outcome and hide a deleted guard. Before trusting a "survived" result,
+  print the mutated region to prove the change actually landed — an unapplied
+  mutation (wrong indentation, a pattern that didn't match) and a genuinely
+  surviving mutation both read as "all tests still pass," and are otherwise
+  indistinguishable.
 - **Any script that mutates a database must print which database it targets
   before doing so.**
 - **Recon first on non-trivial changes.** Surface contradictions before writing
