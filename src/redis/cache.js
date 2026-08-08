@@ -59,6 +59,11 @@ let skipped = 0;
  * in the output means an empty-string value cannot collide with an absent one
  * — `{}` serializes to `[]`, `{ status: '' }` to `[["status",""]]`.
  *
+ * That second property is load-bearing, and it comes from the names being
+ * present — NOT from the sorting. Do not "shorten" these keys by serializing
+ * values only: `['', 10]` and `[10]` are one field apart in different
+ * positions, and absent-vs-empty starts colliding again.
+ *
  * `undefined` is dropped, which matches the services: they treat an undefined
  * param as "no filter", so `{ limit: 10 }` and `{ limit: 10, cursor: undefined }`
  * are the same query and must share a key. `null` is kept and therefore
@@ -113,11 +118,17 @@ export async function withCache(namespace, params, ttlSeconds, loader) {
     misses += 1;
     const result = await loader();
 
-    // Skip ONLY a null result, never a falsy one. An empty array is a real,
-    // cacheable answer — "this match has no events" is worth caching, and `!result`
-    // would throw it away on every request. null is excluded because cacheGet
-    // cannot distinguish a stored null from a miss (it returns `value ?? null`),
-    // so caching one would produce an entry that can never register as a hit.
+    // Skip ONLY a null result, never merely a falsy one. null is excluded
+    // because cacheGet cannot distinguish a stored null from a miss (it
+    // returns `value ?? null`), so caching one produces an entry that can
+    // never register as a hit while still costing a write.
+    //
+    // The test is `=== null` rather than `!result` on purpose. Note this is
+    // NOT about empty lists: `[]` is truthy, so both forms cache it. It
+    // matters for a falsy SCALAR — a loader returning 0, '' or false has
+    // returned a real answer, and `!result` would silently refuse to cache it
+    // forever. No current caller returns one, but the cheap guard is the
+    // correct one, and the loose form fails silently rather than loudly.
     if (result === null) {
         skipped += 1;
         return result;
