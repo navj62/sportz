@@ -175,3 +175,65 @@ Prefer the prefix scan if this becomes due. Do not hand-enumerate key variants.
 Worth pairing with the cache hit/miss observability in followup 7: a staleness
 complaint is very hard to diagnose without knowing whether reads are being
 served from cache at all.
+
+---
+
+## 9. Cap per-socket subscriptions before the frontend starts subscribing
+
+**Trigger: the frontend beginning to send `subscribe` frames.**
+
+Nothing limits how many match ids one socket may subscribe to.
+`socket.subscriptions` and the module-level `matchSubscribers` both grow for
+every accepted frame, so a client that loops on `{"type":"subscribe"}` with
+rising ids grows server memory without bound.
+
+Arcjet does not cover this. It rate-limits the **upgrade** (5 per 2s in
+`wsArcjet`), not messages on a socket that is already open, and `maxPayload`
+bounds the size of a single frame rather than how many arrive.
+
+It is unexploitable today, which is why it is deferred rather than fixed: no
+part of the frontend sends a `subscribe` frame at all — its `subscribe()`
+registers a local listener and never touches the wire — so no path reaches the
+handler in production.
+
+It is deferred rather than fixed *now* for a second reason: the right cap
+depends on a subscription pattern that does not exist yet. The detail view
+needs one subscription; a list view that ever opts in would need roughly one
+per visible row. Picking a number before that design exists means guessing, and
+a cap set too low fails users while looking like a bug.
+
+Add it in the same change that starts sending subscribe frames, before that
+change deploys — not after. Same shape as followup 1: a guard deliberately left
+off a path that cannot currently be reached, with the trigger that makes it
+due written down.
+
+---
+
+## 10. Decide how the network-bound suites run in CI
+
+**Trigger: setting up CI.**
+
+`redis.test.js`, `cachedReads.test.js` and `integration.test.js` all make real
+round trips to hosted free-tier services — Neon in ap-southeast-1 and Upstash.
+Locally that is handled by `testTimeout: 20000` plus `retry: 2` scoped to the
+two Upstash-dependent suites, and by `fileParallelism: false` because two
+suites TRUNCATE the same database.
+
+That is a local-development fix and it will not be enough in CI, which is
+likely to be slower, further from both services, and subject to the same
+free-tier limits from a shared address. Turning the knobs further is the wrong
+answer: a suite that only passes because it retries enough is not a suite.
+
+The two real options:
+
+- **Local services.** A Redis container plus a second test database per run.
+  This also removes the reason `fileParallelism` is off, so it is the option
+  that buys back run time as the suite grows — currently 50-80s serialized.
+- **Gate them.** Skip the network suites in CI behind an env flag and run them
+  on a schedule or before release, leaving CI to cover the pure-unit suites.
+  Cheaper, but it means the cache-enabled path — whose only automated coverage
+  is `cachedReads.test.js` — stops being checked per commit.
+
+Prefer local services if the CI setup can afford them; the gating option
+quietly weakens exactly the coverage that was hardest to build. Decide at CI
+setup, not before.
