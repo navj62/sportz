@@ -40,7 +40,8 @@ Violating these breaks the app or its guarantees.
 `getApiKey()`, `isRedisEnabled()`, `readConfig()`, and `db.js`'s `init()` all
 defer the read. This keeps every module side-effect free to import, which is
 what lets unit tests run with no credentials in the environment. The only
-module-load env readers are `arcjet.js` and `logger.js`.
+importable modules that read env at load are `arcjet.js` and `logger.js`.
+(`index.js` does too, but it is the entrypoint and is never imported.)
 
 **`db.js` is the model for this rule, not an exception to it.**
 It defers *both* pool construction and the `DATABASE_URL` read to first
@@ -158,7 +159,9 @@ These come from things that have actually gone wrong here.
   print the mutated region to prove the change actually landed — an unapplied
   mutation (wrong indentation, a pattern that didn't match) and a genuinely
   surviving mutation both read as "all tests still pass," and are otherwise
-  indistinguishable.
+  indistinguishable. The same shape applies to configuration — an unsupported
+  or misspelled option no-ops silently — so demonstrate the mechanism engaging
+  before crediting a fix to it.
 - **Any script that mutates a database must print which database it targets
   before doing so.**
 - **Recon first on non-trivial changes.** Surface contradictions before writing
