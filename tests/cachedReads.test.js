@@ -31,7 +31,13 @@ const migrationsFolder = path.join(
 // cache-enabled path cannot be exercised at all and passing would be vacuous.
 const skip = !process.env.TEST_DATABASE_URL || !process.env.UPSTASH_REDIS_REST_URL;
 
-describe.skipIf(skip)('Cached reads — cache enabled', () => {
+// Retried for the same reason as redis.test.js: a transient Upstash failure
+// surfaces as cacheGet returning null, which reads as a miss, which fails a
+// hit assertion — while the app has behaved correctly throughout. Scoped here
+// rather than set globally, and deliberately not applied to the integration
+// suite: the cache-staleness failures found while wiring this cache were
+// intermittent AND real, and a blanket retry would have buried them.
+describe.skipIf(skip)('Cached reads — cache enabled', { retry: 2 }, () => {
     let app;
 
     async function seedMatch(overrides = {}) {

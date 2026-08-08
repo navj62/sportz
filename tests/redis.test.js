@@ -17,7 +17,13 @@ const skip = !process.env.UPSTASH_REDIS_REST_URL;
 const RUN = `test:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 const key = (name) => `${RUN}:${name}`;
 
-describe.skipIf(skip)('Redis client — real Upstash', () => {
+// Retried because the only failure mode seen here is a transient Upstash
+// blip: the helper catches it, returns its safe value, and the assertion of a
+// real round-tripped value fails while the app's graceful-degradation contract
+// is behaving exactly as designed. The app is weaker than the test on purpose,
+// so a single blip is not a defect. Scoped to this suite — never the
+// integration suite, where an intermittent failure can be real DB logic.
+describe.skipIf(skip)('Redis client — real Upstash', { retry: 2 }, () => {
     // Locks are deliberately absent here. Releasing one now requires the token
     // the acquiring test holds, which is the point of fencing — a tokenless
     // sweep is exactly the cross-holder delete the script refuses. The tests
