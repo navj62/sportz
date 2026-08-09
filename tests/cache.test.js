@@ -32,6 +32,21 @@ const {
     __resetCacheStatsForTests,
 } = await import('../src/redis/cache.js');
 
+const { CACHE_HEALTH_MIN_CACHEABLE_LOOKUPS: MIN_LOOKUPS } =
+    await import('../src/redis/constants.js');
+
+/** Drives `count` distinct cache misses. `empty` makes each result null, i.e. a skip. */
+async function driveMisses(count, { empty = false } = {}) {
+    for (let i = 0; i < count; i += 1) {
+        await withCache(
+            'probe',
+            { unique: `${empty ? 'null' : 'row'}-${i}` },
+            60,
+            vi.fn().mockResolvedValue(empty ? null : [{ id: i }]),
+        );
+    }
+}
+
 beforeEach(() => {
     vi.clearAllMocks();
     mocks.store.clear();
@@ -296,5 +311,69 @@ describe('getCacheStats', () => {
         __resetCacheStatsForTests();
 
         expect(getCacheStats()).toMatchObject({ hits: 0, misses: 0, skipped: 0 });
+    });
+});
+
+// The one cache fault that is otherwise invisible: configured, never erroring,
+// and never hitting. Raw counters cannot distinguish it from a cold cache, so
+// the status field has to say it outright.
+describe('getCacheStats — health status', () => {
+    it('reports disabled when Redis is off, whatever the counters say', async () => {
+        mocks.setEnabled(false);
+
+        expect(getCacheStats().status).toBe('disabled');
+    });
+
+    it('reports never-hit when a live cache has served nothing back', async () => {
+        await driveMisses(MIN_LOOKUPS);
+
+        const stats = getCacheStats();
+        expect(stats.status).toBe('never-hit');
+        expect(stats).toMatchObject({ enabled: true, hits: 0, hitRate: 0 });
+    });
+
+    it('reports ok once the cache is actually serving', async () => {
+        await driveMisses(MIN_LOOKUPS);
+        // Repeat one key so it comes back from the store.
+        const loader = vi.fn().mockResolvedValue([{ id: 1 }]);
+        await withCache('probe', { unique: 'hitme' }, 60, loader);
+        await withCache('probe', { unique: 'hitme' }, 60, loader);
+
+        expect(getCacheStats().status).toBe('ok');
+        expect(getCacheStats().hits).toBe(1);
+    });
+
+    // ── Guard 1: the boot-time false alarm ───────────────────────────────────
+    // A fresh process has no hits yet by definition. Without the cold floor,
+    // every restart would report a fault for its first few requests.
+    it('reports cold, not never-hit, below the cacheable-lookup floor', async () => {
+        await driveMisses(MIN_LOOKUPS - 1);
+
+        expect(getCacheStats()).toMatchObject({ status: 'cold', hits: 0 });
+    });
+
+    // ── Guard 2: the 404-heavy false alarm ───────────────────────────────────
+    // Skipped results are nulls the cache refuses to store, so they can never
+    // become hits. Counting them as evidence of breakage would raise a fault
+    // against a perfectly healthy cache serving mostly-missing rows.
+    it('does not count skipped results as evidence of a broken cache', async () => {
+        await driveMisses(MIN_LOOKUPS, { empty: true });
+        await driveMisses(5);
+
+        const stats = getCacheStats();
+        // Raw misses clear the floor; cacheable ones do not.
+        expect(stats.misses).toBeGreaterThanOrEqual(MIN_LOOKUPS);
+        expect(stats.skipped).toBe(MIN_LOOKUPS);
+        expect(stats.status).toBe('cold');
+        expect(stats.status).not.toBe('never-hit');
+    });
+
+    it('reports a hit rate over all lookups', async () => {
+        const loader = vi.fn().mockResolvedValue([{ id: 1 }]);
+        await withCache('probe', { unique: 'r' }, 60, loader);
+        await withCache('probe', { unique: 'r' }, 60, loader);
+        await withCache('probe', { unique: 'r' }, 60, loader);
+
+        expect(getCacheStats()).toMatchObject({ hits: 2, misses: 1, hitRate: 0.6667 });
     });
 });

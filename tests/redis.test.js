@@ -6,6 +6,8 @@ import {
     acquireLock,
     releaseLock,
     isRedisEnabled,
+    getLockStats,
+    __resetLockStatsForTests,
 } from '../src/redis/client.js';
 
 // These hit the real Upstash instance. Skip the suite when it is not configured,
@@ -167,5 +169,22 @@ describe.skipIf(skip)('Redis client — real Upstash', { retry: 2 }, () => {
 
         await cacheDel(shared);
         await releaseLock(shared, lock.token);
+    });
+
+    // 'acquired' and 'held' can only be produced by a Redis that actually
+    // answers, so they are counted here rather than against the unreachable
+    // mock in redisFallback.test.js, which can only ever yield 'error'.
+    it('counts acquired and held lock outcomes', async () => {
+        __resetLockStatsForTests();
+
+        const first = await acquireLock(key('counted'), 30);
+        const second = await acquireLock(key('counted'), 30);
+
+        expect(getLockStats()).toMatchObject({
+            acquired: 1, held: 1, error: 0, disabled: 0, errorRate: 0,
+        });
+        expect(second.acquired).toBe(false);
+
+        await releaseLock(key('counted'), first.token);
     });
 });

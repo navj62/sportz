@@ -8,14 +8,20 @@ import {
     releaseLock,
     isRedisEnabled,
     initRedis,
+    redisPing,
+    getLockStats,
     __resetRedisClientForTests,
+    __resetLockStatsForTests,
 } from '../src/redis/client.js';
 
 // Hoisted so the vi.mock factory below — which is lifted above the imports —
 // can close over these without hitting a temporal dead zone.
-const { constructed, calls } = vi.hoisted(() => ({
+const { constructed, calls, pingImpl } = vi.hoisted(() => ({
     constructed: vi.fn(),
     calls: vi.fn(),
+    // Overridable per test: the default stands in for an unreachable host,
+    // while the timeout case needs a ping that never settles at all.
+    pingImpl: vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))),
 }));
 
 // A client whose every command rejects, standing in for Upstash being
@@ -50,6 +56,11 @@ vi.mock('@upstash/redis', () => ({
         eval(...args) {
             calls('eval', ...args);
             return Promise.reject(new Error('ECONNREFUSED'));
+        }
+
+        ping(...args) {
+            calls('ping', ...args);
+            return pingImpl();
         }
     },
 }));
@@ -304,5 +315,110 @@ describe('Redis client — not configured', () => {
         const [context, message] = info.mock.calls[0];
         expect(context).toEqual({ host: 'example-12345.upstash.io' });
         expect(JSON.stringify([context, message])).not.toContain('super-secret-token');
+    });
+});
+
+describe('redisPing — degradation', () => {
+    let warn;
+
+    beforeEach(() => {
+        process.env.UPSTASH_REDIS_REST_URL = 'https://mock.upstash.io';
+        process.env.UPSTASH_REDIS_REST_TOKEN = 'mock-token';
+        __resetRedisClientForTests();
+        pingImpl.mockReset();
+        warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        warn.mockRestore();
+        __resetRedisClientForTests();
+        restoreEnv();
+    });
+
+    it('reports ok when the ping answers', async () => {
+        pingImpl.mockResolvedValue('PONG');
+
+        await expect(redisPing()).resolves.toBe('ok');
+    });
+
+    it('reports unreachable and warns when the ping rejects', async () => {
+        pingImpl.mockRejectedValue(new Error('ECONNREFUSED'));
+
+        await expect(redisPing()).resolves.toBe('unreachable');
+        expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    // The reason the timeout exists: the Upstash REST client has no deadline of
+    // its own, so a hung instance would otherwise hang /debug/stats forever.
+    // A ping that never settles must still resolve, via the race.
+    it('reports unreachable when the ping never settles', async () => {
+        pingImpl.mockReturnValue(new Promise(() => {}));
+
+        await expect(redisPing(50)).resolves.toBe('unreachable');
+    });
+
+    it('never throws, whatever the client does', async () => {
+        pingImpl.mockImplementation(() => { throw new Error('synchronous boom'); });
+
+        await expect(redisPing()).resolves.toBe('unreachable');
+    });
+});
+
+describe('getLockStats — outcome counters', () => {
+    beforeEach(() => {
+        __resetLockStatsForTests();
+    });
+
+    afterEach(() => {
+        __resetRedisClientForTests();
+        restoreEnv();
+        __resetLockStatsForTests();
+    });
+
+    it('starts at zero with a zero error rate', () => {
+        expect(getLockStats()).toEqual({
+            acquired: 0, held: 0, error: 0, disabled: 0, errorRate: 0,
+        });
+    });
+
+    it('counts an error when Redis is configured but unreachable', async () => {
+        process.env.UPSTASH_REDIS_REST_URL = 'https://mock.upstash.io';
+        process.env.UPSTASH_REDIS_REST_TOKEN = 'mock-token';
+        __resetRedisClientForTests();
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+        await acquireLock('counted', 30);
+
+        expect(getLockStats()).toMatchObject({ error: 1, acquired: 0, held: 0 });
+        warn.mockRestore();
+    });
+
+    it('counts a disabled outcome when Redis is not configured', async () => {
+        delete process.env.UPSTASH_REDIS_REST_URL;
+        delete process.env.UPSTASH_REDIS_REST_TOKEN;
+
+        await acquireLock('counted', 30);
+
+        expect(getLockStats()).toMatchObject({ disabled: 1, error: 0 });
+    });
+
+    // A rising error rate is the only signal that the lock has stopped
+    // coordinating — 'error' means we could not even ask whether a contender
+    // exists, and the poll proceeds uncoordinated rather than skipping.
+    it('reports the error rate across all outcomes', async () => {
+        process.env.UPSTASH_REDIS_REST_URL = 'https://mock.upstash.io';
+        process.env.UPSTASH_REDIS_REST_TOKEN = 'mock-token';
+        __resetRedisClientForTests();
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+        await acquireLock('counted', 30);
+        delete process.env.UPSTASH_REDIS_REST_URL;
+        delete process.env.UPSTASH_REDIS_REST_TOKEN;
+        await acquireLock('counted', 30);
+        await acquireLock('counted', 30);
+
+        // One error out of three attempts.
+        expect(getLockStats()).toMatchObject({ error: 1, disabled: 2, errorRate: 0.3333 });
+        warn.mockRestore();
     });
 });
