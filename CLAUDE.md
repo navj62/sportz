@@ -20,6 +20,11 @@ own CLAUDE.md — this file covers the backend only.
   `withCache`. `liveSync` writes invalidate nothing, so staleness is bounded by
   the TTL — always far shorter than the poll interval. The deprecated
   commentary alias is deliberately uncached.
+- **`GET /debug/stats` is the operational view** — cache health, poll-lock
+  outcome counts, Redis reachability. Registered only when
+  `DEBUG_ENDPOINTS_ENABLED` is exactly `'true'`, and *after* the security
+  middleware so it is rate-limited. There is no auth, so enabling it in
+  production makes it public.
 - **One `/fixtures?live=all` request yields fixtures, leagues AND events.**
   Competitions and events fall out of that single payload; neither is fetched
   on its own. Adding a per-fixture request multiplies quota cost by the number
@@ -113,7 +118,16 @@ costs more daily quota than being live, which inverts the whole sizing model.
   reaper on a normal shutdown, not just a SIGKILL backstop. Awaiting the poll
   would delay every SIGTERM for no correctness gain — fencing plus TTL cover it.
 - **`/health` is registered before the security middleware**, so it is exempt
-  from rate limiting.
+  from rate limiting. `/debug/stats` is registered *after* it, so it is not —
+  the two want opposite treatment, and registration order is what enforces it.
+- **`/health` never touches Redis, deliberately.** It is a liveness probe for
+  the app's only real dependency, Postgres. An advisory `redis` field would
+  honour "Redis must never make `/health` return 503" in the response body
+  while breaking it in practice: an Upstash ping measures around 800ms, so a
+  platform probe with its own timeout could fail the service on Redis latency
+  alone. Redis trouble surfaces on `/debug/stats` instead, where a collapsing
+  hit rate and a climbing lock error rate say whether it is affecting anything.
+  Resolved, not pending — see `FOLLOWUPS.md` entry 7 before re-opening it.
 - **`/matches/:id/commentary` is deprecated but live.** The commentary table is
   gone; the route reads `events` and synthesizes the `message` string the
   frontend still expects. `/matches/:id/events` is canonical; removal is
