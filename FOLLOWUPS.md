@@ -118,24 +118,33 @@ Do not run `npm audit fix --force` — it is what performs that downgrade.
 
 ---
 
-## 7. Widen observability beyond the database
+## 7. Widen observability beyond the database — RESOLVED
 
-**Trigger: the observability pass.**
+**Kept here, struck through, because half of it was resolved by a DECISION
+rather than by code. Deleting the entry would invite a future session to
+re-open it as "we forgot to add Redis to /health."**
 
-`GET /health` checks Postgres with `SELECT 1` and reports `{ status, db }`. It
-says nothing about Redis, and Redis is now load-bearing for poll coordination.
+The observability half is **built**. `GET /debug/stats` reports cache hit/miss
+health, poll-lock outcome counts including the `'held'` versus `'error'` split,
+and Redis reachability. It is env-gated behind `DEBUG_ENDPOINTS_ENABLED`.
 
-Deliberately not widened yet, because a health check that fails on Redis being
-down would contradict the whole graceful-degradation design — the app is built
-to run correctly with Redis unreachable, so Redis must never be able to make
-`/health` return 503. Any widening has to report Redis as an **advisory** field
-(`redis: 'ok' | 'unreachable' | 'disabled'`) that leaves the top-level status
-governed by the database alone.
+The `/health` half was **decided against, not deferred**. This entry used to
+call for an advisory `redis` field on `/health`. That is now explicitly not
+wanted, and the reasoning lives in CLAUDE.md under Deliberate decisions so it
+is read before anyone touches the route:
 
-Also unexposed: cache hit/miss rates, and how often the poll lock is skipped
-(`'held'`) versus proceeding uncoordinated (`'error'`). That last pair is the
-one worth having — a rising `'error'` rate is the only signal that the lock has
-silently stopped coordinating anything.
+`/health` is a liveness probe. Its question is "can this app serve requests",
+which means "can it reach Postgres" — its only real dependency. Redis is
+optional by design. An advisory field satisfies the letter of "Redis must never
+make /health return 503" while defeating it in practice: a measured Upstash
+ping costs roughly 800ms, and a platform probe with its own timeout would mark
+the service unhealthy on Redis latency alone. The cleanest guarantee that Redis
+cannot fail the health check is that the health check never touches Redis.
+
+Nothing is lost by leaving it out. A Redis outage shows up on `/debug/stats` as
+a hit rate collapsing to zero and a climbing lock error rate — a sharper signal
+than an up/down boolean, because it says whether the failure is affecting
+anything.
 
 ---
 
@@ -172,9 +181,10 @@ Doing it properly means one of:
 
 Prefer the prefix scan if this becomes due. Do not hand-enumerate key variants.
 
-Worth pairing with the cache hit/miss observability in followup 7: a staleness
-complaint is very hard to diagnose without knowing whether reads are being
-served from cache at all.
+Diagnose with `GET /debug/stats` before reaching for this: a staleness
+complaint is very hard to read without knowing whether the cache is being
+served from at all, and a `never-hit` status means the problem is the opposite
+of stale data.
 
 ---
 
@@ -237,3 +247,13 @@ The two real options:
 Prefer local services if the CI setup can afford them; the gating option
 quietly weakens exactly the coverage that was hardest to build. Decide at CI
 setup, not before.
+
+**This has already been observed, not merely predicted.** During the
+observability pass a cold Neon instance turned a 50-80s suite into a **90
+minute** run with seven failures, none of them real: a bare `SELECT 1` was
+measured at 2689ms against the 0.4-1s seen when warm. It recovered on its own
+within a few runs. Note the interaction with `testTimeout: 20000` — raising the
+timeout was right, because healthy remote latency was overrunning a 5s budget,
+but it also means a genuinely degraded database now takes roughly four times as
+long to fail. That is the timeout's real cost, and it is why turning these
+knobs further is not the answer in CI.
