@@ -205,8 +205,14 @@ export default function HomePage() {
       <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
         {/* Matches first on a phone. Stacked in source order the rail would put
             fourteen league rows above the first score, and the scores are the
-            product. The rail returns to the left at lg. */}
-        <aside className="order-2 w-full shrink-0 lg:order-1 lg:sticky lg:top-8 lg:w-64">
+            product. The rail returns to the left at lg.
+
+            Deliberately NOT sticky. Pinning the rail while its content is
+            taller than the viewport makes everything below the fold inside it
+            unreachable — page scroll moves the centre column, and the pinned
+            rail never advances. The rail scrolls with the page instead, so
+            there is exactly one scroll context on this screen. */}
+        <aside className="order-2 w-full shrink-0 lg:order-1 lg:w-64">
           {loading ? (
             <div className="rounded-[8px] bg-surface-raised p-3 ring-1 ring-stroke">
               <div className="flex flex-col gap-2">

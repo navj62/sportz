@@ -68,6 +68,14 @@ function RailHeading({ children }: { children: React.ReactNode }) {
  */
 const LIVE_RAIL_CAP = 14;
 
+/**
+ * All-leagues rows shown before the tail collapses. Capped by COUNT, never by
+ * height with an inner scroller: an `overflow-y-auto` panel here created a
+ * second scroll context that captured the wheel and made the rail's lower half
+ * hard to reach. One scroll on this screen, and it is the page's.
+ */
+const ALL_LEAGUES_CAP = 24;
+
 export default function LeagueSidebar({
   live,
   others,
@@ -80,6 +88,7 @@ export default function LeagueSidebar({
   onSelect: (id: number | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [allExpanded, setAllExpanded] = useState(false);
 
   // A selected competition must stay visible even when it sits below the cut,
   // or the rail loses its own selected state.
@@ -89,8 +98,15 @@ export default function LeagueSidebar({
     expanded || selectedBelowCut ? live : live.slice(0, LIVE_RAIL_CAP);
   const hiddenCount = live.length - visibleLive.length;
 
+  const sortedOthers = [...others].sort((a, b) => {
+    const country = (a.country ?? 'International').localeCompare(b.country ?? 'International');
+    return country !== 0 ? country : a.name.localeCompare(b.name);
+  });
+  const visibleOthers = allExpanded ? sortedOthers : sortedOthers.slice(0, ALL_LEAGUES_CAP);
+  const hiddenOthers = sortedOthers.length - visibleOthers.length;
+
   const byCountry = new Map<string, Competition[]>();
-  for (const c of others) {
+  for (const c of visibleOthers) {
     const key = c.country ?? 'International';
     const list = byCountry.get(key);
     if (list) list.push(c);
@@ -152,9 +168,7 @@ export default function LeagueSidebar({
       {countries.length > 0 && (
         <div className="rounded-[8px] bg-surface-raised p-3 ring-1 ring-stroke">
           <RailHeading>All leagues</RailHeading>
-          {/* The backend knows 150+ competitions. Capped and scrolled so the
-              rail does not run several screens past the match list. */}
-          <div className="flex max-h-104 flex-col gap-4 overflow-y-auto">
+          <div className="flex flex-col gap-4">
             {countries.map(([country, comps]) => (
               <div key={country}>
                 <h3 className="type-label mb-1 px-2 font-semibold text-fg-secondary">
@@ -172,6 +186,15 @@ export default function LeagueSidebar({
                 </div>
               </div>
             ))}
+            {(hiddenOthers > 0 || allExpanded) && (
+              <button
+                type="button"
+                onClick={() => setAllExpanded((v) => !v)}
+                className="type-label rounded-[6px] px-2 py-2 text-left text-fg-muted transition-colors hover:bg-surface-elevated hover:text-fg-secondary"
+              >
+                {allExpanded ? 'Show fewer' : `Show ${hiddenOthers} more`}
+              </button>
+            )}
           </div>
         </div>
       )}
