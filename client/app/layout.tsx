@@ -45,7 +45,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-full flex flex-col bg-surface text-fg">
         <div hidden dangerouslySetInnerHTML={{ __html: DIRECTION_CONTRACT }} />
         <header className="border-b border-stroke bg-surface-raised">
-          <div className="mx-auto w-full max-w-5xl px-4 h-14 flex items-center justify-between">
+          {/* Shares the shell width with the page content — the header used to
+              be max-w-5xl against a max-w-4xl page, so the wordmark and the
+              match list sat on different left edges. */}
+          <div className="mx-auto flex h-14 w-full max-w-280 items-center justify-between px-4">
             <a
               href="/"
               className="numeral text-[1.0625rem] font-extrabold uppercase tracking-[0.01em] text-fg"
