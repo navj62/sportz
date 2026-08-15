@@ -1,0 +1,162 @@
+URL http://localhost:3000/ @ 390x844
+--- MEASUREMENTS ---
+{
+  "wordmarkLeft": 16,
+  "h1Left": 16,
+  "cardLeft": 16,
+  "headerInnerWidth": 390,
+  "contentWidth": 390,
+  "score": {
+    "text": "2",
+    "fontSize": "24px",
+    "weight": "700",
+    "stretch": "100%",
+    "variantNumeric": "tabular-nums",
+    "color": "rgb(244, 246, 248)"
+  },
+  "badges": [
+    {
+      "txt": "LIVE",
+      "color": "rgb(244, 246, 248)",
+      "bg": "rgb(225, 6, 0)",
+      "fontSize": "14px",
+      "h": 17
+    },
+    {
+      "txt": "LIVE",
+      "color": "rgb(244, 246, 248)",
+      "bg": "rgba(0, 0, 0, 0)",
+      "fontSize": "11px",
+      "h": 13
+    },
+    {
+      "txt": "LIVE",
+      "color": "rgb(244, 246, 248)",
+      "bg": "rgb(225, 6, 0)",
+      "fontSize": "14px",
+      "h": 17
+    },
+    {
+      "txt": "LIVE",
+      "color": "rgb(244, 246, 248)",
+      "bg": "rgba(0, 0, 0, 0)",
+      "fontSize": "11px",
+      "h": 13
+    },
+    {
+      "txt": "Finished",
+      "color": "rgb(90, 98, 108)",
+      "bg": "rgb(26, 31, 39)",
+      "fontSize": "12px",
+      "h": 20
+    },
+    {
+      "txt": "Scheduled",
+      "color": "rgb(155, 163, 173)",
+      "bg": "rgb(26, 31, 39)",
+      "fontSize": "12px",
+      "h": 20
+    },
+    {
+      "txt": "Scheduled",
+      "color": "rgb(155, 163, 173)",
+      "bg": "rgb(26, 31, 39)",
+      "fontSize": "12px",
+      "h": 20
+    }
+  ],
+  "liveBadge": {
+    "bg": "rgb(225, 6, 0)",
+    "color": "rgb(244, 246, 248)",
+    "text": "LIVE"
+  },
+  "cardBg": "rgb(18, 22, 28)",
+  "cardRing": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.972185 -0.0012458 -0.00315124 / 0.1) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+  "cardRadius": "8px",
+  "bodyBg": "rgb(10, 13, 17)",
+  "headerBg": "rgb(18, 22, 28)",
+  "cardBgs": [
+    "rgb(18, 22, 28)",
+    "rgb(18, 22, 28)",
+    "rgb(18, 22, 28)",
+    "rgb(18, 22, 28)",
+    "rgb(18, 22, 28)"
+  ]
+}
+
+--- HIT AREAS ---
+[{"tag":"A","txt":"SPORTZ","w":58,"h":26,"under44":true},{"tag":"BUTTON","txt":"All","w":40,"h":32,"under44":true},{"tag":"BUTTON","txt":"Live","w":50,"h":32,"under44":true},{"tag":"BUTTON","txt":"Scheduled","w":92,"h":32,"under44":true},{"tag":"BUTTON","txt":"Finished","w":78,"h":32,"under44":true},{"tag":"INPUT","txt":"Filter by sport…","w":358,"h":36,"under44":true},{"tag":"A","txt":"FOOTBALL|LIVE||Brighton ","w":358,"h":113,"under44":false},{"tag":"A","txt":"FOOTBALL|LIVE||Real Soci","w":358,"h":113,"under44":false},{"tag":"A","txt":"FOOTBALL|Finished||Atala","w":358,"h":116,"under44":false},{"tag":"A","txt":"FOOTBALL|Scheduled||Baye","w":358,"h":108,"under44":false},{"tag":"A","txt":"FOOTBALL|Scheduled||Olym","w":358,"h":108,"under44":false}]
+
+--- OVERFLOW ---
+{"docW":390,"clientW":390,"overflow":false}
+
+--- BODY TEXT ---
+SPORTZ
+Offline
+Matches
+
+Live scores update automatically
+
+All
+Live
+Scheduled
+Finished
+FOOTBALL
+LIVE
+
+Brighton & Hove Albion
+
+Nottingham Forest
+
+2
+
+1
+
+FOOTBALL
+LIVE
+
+Real Sociedad
+
+Athletic Club
+
+0
+
+0
+
+FOOTBALL
+Finished
+
+Atalanta
+
+Internazionale
+
+3
+
+2
+
+FOOTBALL
+Scheduled
+
+Bayer 04 Leverkusen
+
+Borussia Mönchengladbach
+
+15 Aug, 15:52
+
+FOOTBALL
+Scheduled
+
+Olympique de Marseille
+
+Paris Saint-Germain
+
+15 Aug, 17:52
+
+--- CONSOLE ---
+[console.info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[console.log] [HMR] connected
+
+--- LOGS ---
+[error] WebSocket connection to 'ws://localhost:8000/ws' failed: Error during WebSocket handshake: Unexpected response code: 404
+[warning] The resource http://localhost:3000/_next/static/media/c214ffb7f5362987-s.p.woff2?v=1786778638617 was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally.
+[error] WebSocket connection to 'ws://localhost:8000/ws' failed: Error during WebSocket handshake: Unexpected response code: 404
