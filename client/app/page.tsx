@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import type { Match, Competition } from '@/types';
 import { fetchMatches, fetchLiveMatches, fetchCompetitions } from '@/lib/api';
 import { subscribe } from '@/lib/ws';
-import MatchCard from '@/components/match-card';
+import CompetitionBlock from '@/components/competition-block';
 import SectionHeader from '@/components/section-header';
 import LeagueSidebar, { type LeagueCount } from '@/components/league-sidebar';
 import { Button } from '@/components/ui/button';
@@ -22,7 +22,10 @@ import { Skeleton } from '@/components/ui/skeleton';
 const GROUP_THRESHOLD = 2;
 
 interface Groups {
-  grouped: { competition: Competition | null; matches: Match[] }[];
+  // The bucket's own competitionId is kept alongside the resolved competition:
+  // a match can reference a competition the lookup does not have, and keying a
+  // group off the resolved object collapsed every such group onto one key.
+  grouped: { competitionId: number; competition: Competition | null; matches: Match[] }[];
   singles: Match[];
 }
 
@@ -47,7 +50,11 @@ function groupByCompetition(
 
   for (const [id, group] of buckets) {
     if (group.length >= GROUP_THRESHOLD) {
-      grouped.push({ competition: competitions.get(id) ?? null, matches: group });
+      grouped.push({
+        competitionId: id,
+        competition: competitions.get(id) ?? null,
+        matches: group,
+      });
     } else {
       singles.push(...group);
     }
@@ -64,19 +71,25 @@ function groupByCompetition(
   return { grouped, singles };
 }
 
-function CardSkeleton() {
+function BlockSkeleton() {
   return (
     <div className="overflow-hidden rounded-[8px] bg-surface-raised ring-1 ring-stroke">
-      <div className="flex items-center justify-between px-4 pt-3 pb-2.5">
-        <Skeleton className="h-3 w-24" />
-        <Skeleton className="h-5 w-16 rounded-full" />
+      <div className="flex items-center gap-2.5 border-b border-stroke bg-surface-elevated px-4 py-2.5">
+        <Skeleton className="h-4 w-4 rounded-full" />
+        <Skeleton className="h-3 w-32" />
       </div>
-      <div className="space-y-3 px-4 pb-4">
-        {[0, 1].map((i) => (
-          <div key={i} className="flex items-center gap-3">
-            <Skeleton className="h-7 w-7 rounded-full" />
-            <Skeleton className="h-4 flex-1" />
-            <Skeleton className="h-6 w-6" />
+      <div className="divide-y divide-stroke">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 px-4 py-3">
+            <div className="flex items-center justify-end gap-2.5">
+              <Skeleton className="h-4 w-28" />
+              <Skeleton className="h-5 w-5 rounded-full" />
+            </div>
+            <Skeleton className="h-4 w-10" />
+            <div className="flex items-center gap-2.5">
+              <Skeleton className="h-5 w-5 rounded-full" />
+              <Skeleton className="h-4 w-28" />
+            </div>
           </div>
         ))}
       </div>
@@ -248,9 +261,9 @@ export default function HomePage() {
           ) : loading ? (
             <>
               <SectionHeader title="Live now" live level={1} />
-              <div className="space-y-3">
-                {[0, 1, 2, 3].map((i) => (
-                  <CardSkeleton key={i} />
+              <div className="flex flex-col gap-4">
+                {[0, 1, 2].map((i) => (
+                  <BlockSkeleton key={i} />
                 ))}
               </div>
             </>
@@ -281,37 +294,24 @@ export default function HomePage() {
                   )}
                 </div>
               ) : (
-                <div className="flex flex-col gap-8">
-                  {grouped.map(({ competition, matches }) => (
-                    <section key={competition?.id ?? 'unknown'}>
-                      <SectionHeader
-                        title={competition?.name ?? 'Unknown competition'}
-                        logoUrl={competition?.logoUrl ?? null}
-                        meta={matches.length}
-                      />
-                      <div className="space-y-3">
-                        {matches.map((m) => (
-                          <MatchCard key={m.id} match={m} showStatus={false} />
-                        ))}
-                      </div>
-                    </section>
+                <div className="flex flex-col gap-4">
+                  {grouped.map(({ competitionId, competition, matches }) => (
+                    <CompetitionBlock
+                      key={competitionId}
+                      competition={competition}
+                      matches={matches}
+                      live
+                    />
                   ))}
 
                   {singles.length > 0 && (
-                    <section>
-                      <SectionHeader title="Elsewhere" meta={singles.length} />
-                      <div className="space-y-3">
-                        {singles.map((m) => (
-                          <MatchCard
-                            key={m.id}
-                            match={m}
-                            showCompetition
-                            showStatus={false}
-                            competitionName={competitionNameOf(m, competitionMap)}
-                          />
-                        ))}
-                      </div>
-                    </section>
+                    <CompetitionBlock
+                      title="Elsewhere"
+                      matches={singles}
+                      live
+                      showCaptions
+                      competitionNameOf={(m) => competitionNameOf(m, competitionMap)}
+                    />
                   )}
                 </div>
               )}
@@ -319,16 +319,12 @@ export default function HomePage() {
               {recent.length > 0 && selectedId == null && (
                 <section className="mt-12">
                   <SectionHeader title="Recently finished" meta={recent.length} />
-                  <div className="space-y-3">
-                    {recent.map((m) => (
-                      <MatchCard
-                        key={m.id}
-                        match={m}
-                        showCompetition
-                        competitionName={competitionNameOf(m, competitionMap)}
-                      />
-                    ))}
-                  </div>
+                  <CompetitionBlock
+                    title="Full time"
+                    matches={recent}
+                    showCaptions
+                    competitionNameOf={(m) => competitionNameOf(m, competitionMap)}
+                  />
                   {recentCursor && (
                     <div className="mt-6 flex justify-center">
                       <Button
