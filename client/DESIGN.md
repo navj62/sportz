@@ -136,10 +136,28 @@ defined costs nothing and means the surface does not break if they arrive.
 next to its colour. `LiveBadge` is the reference implementation: a pulsing dot
 *and* the word "Live".
 
-The LIVE pill uses a **solid** red fill rather than a tint, because `#E10600`
-text on the raised surface is 3.65:1 while `--text-primary` on `#E10600` is
-4.59:1. The pill is small enough that filling it costs almost nothing against
-the red budget, and it reads harder from across a room.
+The LIVE indicator has **two densities, one component** (`LiveBadge`), so a
+second live treatment never grows alongside it.
+
+- **Compact** — a red dot beside a white label. Used in the match list, where
+  hundreds of live rows share a screen. A filled pill tiles into an ambient
+  wall of red at that volume, and ambient red stops meaning "look here", which
+  is the exact failure the restraint rule exists to prevent.
+- **Default** — solid red fill. Used where a single match owns the screen.
+  `#E10600` text on the raised surface is 3.65:1 while `--text-primary` on
+  `#E10600` is 4.59:1, so the fill is what makes the label legible; it costs
+  almost nothing against the budget when it is the only one on screen, and it
+  reads harder from across a room.
+
+The compact form's label is `--text-primary` on the surface, not red — it
+sidesteps that contrast problem rather than inheriting it, and the red is
+carried by a 6px dot, a non-text marker not held to the 4.5:1 threshold. Do not
+"fix" the compact label to red.
+
+Restraint that removes necessary state is a gap, not restraint: the list
+briefly dropped the per-row marker on the reasoning that a LIVE NOW section
+header made it redundant, which held only while that header was on screen. Both
+densities always ship the word "Live" alongside the dot.
 
 ## Hairlines
 
@@ -224,6 +242,14 @@ comes from lucide at the same size and stroke.
 **No emoji, ever.** They render differently on every OS, so the brand has no
 control over them, and they import a full colour palette into a world that
 permits one chromatic value.
+
+**Crests and league badges** go through `CompetitionLogo`, which falls back to
+an initials monogram on **two** conditions: a null URL, and a URL that fails to
+load. The load-failure branch is defensive rather than a response to an
+observed failure — measured against the live CDN, zero of ~1000 crest requests
+failed, and the blanks that prompted it turned out to be images still loading.
+It stays because an empty box where a crest should be reads as broken rather
+than minimal.
 
 | Marker | Treatment |
 |---|---|

@@ -138,7 +138,7 @@ export default function MatchRow({
             block. */}
         <div className="flex w-20 shrink-0 flex-col items-center justify-center gap-1">
           {status === 'live' ? (
-            <LiveBadge />
+            <LiveBadge compact />
           ) : settled ? (
             <span className="type-caption leading-none text-fg-muted">FT</span>
           ) : interrupted ? (

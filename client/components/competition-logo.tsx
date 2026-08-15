@@ -1,13 +1,17 @@
+'use client';
+
+import { useState } from 'react';
 import Image from 'next/image';
 
 /**
  * A crest or league badge, with a monogram fallback.
  *
- * Every row from API-Football currently carries a logo URL, but the column is
- * nullable and the CDN is a third party, so the fallback is the default path
- * rather than an edge case. Initials come from the name so the fallback still
- * identifies the team — this is the treatment PRODUCT.md specified for the
- * period when no crests existed at all.
+ * The fallback triggers on TWO conditions: a null URL, and a URL that fails to
+ * load. The second is defensive, not a fix for an observed failure — measured
+ * against the live CDN, zero of ~1000 crest requests failed. It is here because
+ * the page renders around a thousand third-party images and an empty box where
+ * a crest should be reads as broken rather than minimal; initials at least
+ * identify the team.
  */
 
 function initialsOf(name: string): string {
@@ -34,14 +38,19 @@ export default function CompetitionLogo({
   name: string;
   size?: number;
 }) {
-  if (!src) {
+  const [failed, setFailed] = useState(false);
+
+  if (!src || failed) {
     return (
       <span
         className="flex shrink-0 items-center justify-center rounded-full bg-surface ring-1 ring-stroke"
         style={{ width: size, height: size }}
         aria-hidden="true"
       >
-        <span className="numeral text-[0.625rem] font-bold text-fg-secondary">
+        <span
+          className="numeral font-bold text-fg-secondary"
+          style={{ fontSize: Math.max(9, Math.round(size * 0.36)) }}
+        >
           {initialsOf(name)}
         </span>
       </span>
@@ -56,6 +65,7 @@ export default function CompetitionLogo({
       height={size}
       className="shrink-0 object-contain"
       style={{ width: size, height: size }}
+      onError={() => setFailed(true)}
       unoptimized
     />
   );
