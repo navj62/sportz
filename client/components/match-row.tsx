@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import type { Match } from '@/types';
 import CompetitionLogo from '@/components/competition-logo';
+import { LiveBadge } from '@/components/live-badge';
 
 /**
  * One match, on one line.
@@ -14,6 +15,14 @@ import CompetitionLogo from '@/components/competition-logo';
  * No venue here. The list card stays teams and time-or-score; venue belongs
  * on the match detail page.
  */
+
+const STATE_LABEL: Record<Match['status'], string> = {
+  live: 'live now',
+  finished: 'full time',
+  scheduled: 'kicks off',
+  postponed: 'postponed',
+  cancelled: 'cancelled',
+};
 
 function formatKickoff(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, {
@@ -107,9 +116,9 @@ export default function MatchRow({
     <Link
       href={`/matches/${id}`}
       aria-label={
-        hasScore
-          ? `${homeTeam} ${homeScore}, ${awayTeam} ${awayScore}, ${status}`
-          : `${homeTeam} versus ${awayTeam}, ${formatDay(startTime)} ${formatKickoff(startTime)}`
+        hasScore && !interrupted
+          ? `${homeTeam} ${homeScore}, ${awayTeam} ${awayScore}, ${STATE_LABEL[status]}`
+          : `${homeTeam} versus ${awayTeam}, ${STATE_LABEL[status]}, ${formatDay(startTime)} ${formatKickoff(startTime)}`
       }
       className="block px-4 py-2.5 transition-colors hover:bg-surface-elevated focus-visible:outline-none focus-visible:bg-surface-elevated"
     >
@@ -122,12 +131,27 @@ export default function MatchRow({
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
         <Side name={homeTeam} logoUrl={homeTeamLogoUrl} dim={dimHome} align="home" />
 
-        <div className="flex w-16 shrink-0 flex-col items-center justify-center">
-          {interrupted ? (
-            <span className="type-caption text-postponed">
-              {status === 'postponed' ? 'P—P' : 'Off'}
+        {/* State above, value below — every row says what it is before it says
+            what the number means. A live 0–0 and a finished 0–0 are the same
+            two characters; without the marker the row is unreadable, which is
+            what a section header alone could not fix once you scroll into a
+            block. */}
+        <div className="flex w-20 shrink-0 flex-col items-center justify-center gap-1">
+          {status === 'live' ? (
+            <LiveBadge />
+          ) : settled ? (
+            <span className="type-caption leading-none text-fg-muted">FT</span>
+          ) : interrupted ? (
+            <span className="type-caption leading-none text-postponed">
+              {status === 'postponed' ? 'Postponed' : 'Cancelled'}
             </span>
-          ) : hasScore ? (
+          ) : (
+            <span className="type-caption leading-none text-fg-muted">
+              {formatDay(startTime)}
+            </span>
+          )}
+
+          {hasScore && !interrupted ? (
             <span className="numeral text-[1.0625rem] font-extrabold leading-none tracking-[-0.02em] text-fg">
               {homeScore}&ndash;{awayScore}
             </span>
@@ -135,9 +159,6 @@ export default function MatchRow({
             <span className="numeral text-[0.9375rem] font-bold leading-none text-fg-secondary">
               {formatKickoff(startTime)}
             </span>
-          )}
-          {settled && (
-            <span className="type-caption mt-1 leading-none text-fg-muted">FT</span>
           )}
         </div>
 
