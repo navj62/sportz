@@ -2,7 +2,7 @@ import type { Match, MatchEvent, Competition } from '@/types';
 import { LiveBadge } from '@/components/live-badge';
 import { Badge } from '@/components/ui/badge';
 import CompetitionLogo from '@/components/competition-logo';
-import { categorise, formatMinute, isOwnGoal } from '@/lib/events';
+import { isGoal, formatMinute, isOwnGoal } from '@/lib/events';
 
 /**
  * The single-match header.
@@ -80,7 +80,10 @@ function Side({
  */
 function Scorers({ events, side }: { events: MatchEvent[]; side: 'home' | 'away' }) {
   const goals = events.filter((e) => {
-    if (categorise(e) !== 'goal') return false;
+    // isGoal already excludes missed penalties, Var retractions AND shootout
+    // kicks, so this line explains the scoreline rather than listing every
+    // goal-shaped row.
+    if (!isGoal(e)) return false;
     const creditedTo = isOwnGoal(e)
       ? e.teamSide === 'home'
         ? 'away'
@@ -91,26 +94,44 @@ function Scorers({ events, side }: { events: MatchEvent[]; side: 'home' | 'away'
 
   if (goals.length === 0) return null;
 
-  const byPlayer = new Map<string, string[]>();
+  const named = new Map<string, string[]>();
+  const unnamed: string[] = [];
+
   for (const g of goals) {
     const minute = formatMinute(g) ?? '';
-    const key = (g.playerName ?? '') + (isOwnGoal(g) ? ' (og)' : '');
-    const list = byPlayer.get(key);
+    const name = g.playerName ? g.playerName + (isOwnGoal(g) ? ' (og)' : '') : null;
+    if (!name) {
+      if (minute) unnamed.push(minute);
+      continue;
+    }
+    const list = named.get(name);
     if (list) list.push(minute);
-    else byPlayer.set(key, [minute]);
+    else named.set(name, [minute]);
   }
 
   return (
     <ul className="flex flex-col gap-0.5">
-      {[...byPlayer.entries()].map(([name, minutes]) => (
+      {[...named.entries()].map(([name, minutes]) => (
         <li key={name} className="type-label text-fg-secondary">
-          {name && <span className="text-fg">{name}</span>}
-          {name && ' '}
+          <span className="text-fg">{name}</span>{' '}
           <span className="numeral text-[0.8125rem] font-bold">
             {minutes.filter(Boolean).join(', ')}
           </span>
         </li>
       ))}
+
+      {/* Unnamed scorers get their own labelled line. Rendered as a bare list
+          of minutes they read as a continuation of the player above — which
+          attributes those goals to the wrong person. A name is missing on ~32%
+          of goals, so this is the common case, not an edge one. */}
+      {unnamed.length > 0 && (
+        <li className="type-label text-fg-muted">
+          <span>Scorer unknown</span>{' '}
+          <span className="numeral text-[0.8125rem] font-bold">
+            {unnamed.join(', ')}
+          </span>
+        </li>
+      )}
     </ul>
   );
 }

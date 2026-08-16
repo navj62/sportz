@@ -57,9 +57,30 @@ export function categorise(event: MatchEvent): EventCategory {
   return 'other';
 }
 
-/** True only for events that changed the score. */
+/**
+ * A penalty-shootout kick, flagged explicitly upstream.
+ *
+ * API-Football files shootout kicks as ordinary `Goal / Penalty` and
+ * `Goal / Missed Penalty` rows at minute 90, so on the row alone they are
+ * indistinguishable from a late penalty — but it also sets
+ * `comments: 'Penalty Shootout'`, which appears on nothing else in 2,558 rows.
+ * That marker is the discriminator, and it is exact rather than inferred.
+ *
+ * A minute-based rule would have been wrong: in match 1216 the genuine 90th
+ * minute missed penalty (id 2098) is untagged while all six shootout kicks are
+ * tagged, so "minute >= 90" would have discarded a real event.
+ */
+export function isShootout(event: MatchEvent): boolean {
+  return event.metadata?.comments === 'Penalty Shootout';
+}
+
+/**
+ * True only for events that changed the SCORELINE. Shootout kicks are goals in
+ * the shootout but never on the scoreboard, so they are excluded here — this
+ * is what the scorer summary counts.
+ */
 export function isGoal(event: MatchEvent): boolean {
-  return categorise(event) === 'goal';
+  return categorise(event) === 'goal' && !isShootout(event);
 }
 
 export function isOwnGoal(event: MatchEvent): boolean {
@@ -102,6 +123,12 @@ export const CATEGORY_LABEL: Record<EventCategory, string> = {
 export function eventLabel(event: MatchEvent): string {
   const category = categorise(event);
   const detail = event.detail?.trim();
+
+  // Named explicitly so seven "Goal · penalty" rows on a 1-1 match cannot read
+  // as seven goals.
+  if (isShootout(event)) {
+    return category === 'missed' ? 'Shootout penalty missed' : 'Shootout penalty';
+  }
 
   if (category === 'goal' && detail) {
     const d = detail.toLowerCase();
