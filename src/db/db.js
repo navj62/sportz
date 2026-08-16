@@ -27,6 +27,28 @@ function init() {
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
   });
+
+  // pg-pool re-emits errors from IDLE clients onto the pool. In Node an
+  // 'error' event with no listener is an unhandled exception, so a hosted
+  // Postgres dropping an idle connection took the whole process down —
+  // `Error: read ETIMEDOUT at Client.idleListener`, killing the poll loop and
+  // every WebSocket with it. The listener EXISTING is the fix; pg has already
+  // discarded the client by the time this runs, and the pool replaces it on
+  // the next checkout.
+  //
+  // console.error, not the logger: importing logger.js here would make db.js
+  // read env at import and stop being side-effect free to import, which is
+  // what lets the unit suites run with no credentials in the environment.
+  // This path is a rare degraded-path event at runtime, never the hot path.
+  //
+  // Logs `code` and `message` only — never the error object, which can carry
+  // connection detail.
+  poolInstance.on("error", (error) => {
+    console.error(
+      `[db] idle client error (${error?.code ?? "no code"}): ${error?.message ?? error}. Client discarded; pool continues.`,
+    );
+  });
+
   dbInstance = drizzle(poolInstance);
 }
 
