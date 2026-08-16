@@ -1,6 +1,7 @@
 import type {
   Match,
   Competition,
+  MatchEvent,
   Commentary,
   PaginatedResponse,
 } from '@/types';
@@ -102,6 +103,21 @@ export async function fetchCompetitions(): Promise<Competition[]> {
   }
 
   return out;
+}
+
+/**
+ * The canonical event endpoint. `/matches/:id/commentary` is a deprecated
+ * alias that synthesises a `message` string from these same rows; nothing in
+ * the app should call it. Its removal is FOLLOWUPS entry 2, gated on exactly
+ * this — the frontend no longer calling it.
+ */
+export async function fetchMatchEvents(
+  matchId: string | number,
+): Promise<MatchEvent[]> {
+  const res = await fetch(`${BASE}/matches/${matchId}/events`);
+  if (!res.ok) throw new Error(`Failed to fetch events: ${res.status}`);
+  const body = (await res.json()) as { data: MatchEvent[] };
+  return body.data;
 }
 
 export interface CommentaryFilters {

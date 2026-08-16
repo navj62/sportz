@@ -45,6 +45,39 @@ export interface Competition {
   updatedAt: string;
 }
 
+/**
+ * An event row exactly as GET /matches/:id/events returns it.
+ *
+ * `type` is API-Football's raw vocabulary, written straight through by
+ * mapFixtureToEvents — the allowlist is EVENT_TYPES in
+ * src/validation/events.js: "Goal" | "Card" | "subst" | "Var". It is NOT
+ * normalised, and it is NOT the field to branch on: `type: 'Goal'` covers a
+ * scored goal, a penalty, an OWN goal and a MISSED penalty. The meaning lives
+ * in `detail` — see lib/events.ts.
+ */
+export interface MatchEvent {
+  id: number;
+  matchId: number;
+  // Never null across 2,558 rows measured.
+  minute: number | null;
+  type: string;
+  // Null on exactly 1 of 2,558 rows, which is why it is the branch field.
+  detail: string | null;
+  // Null on ~15% of rows overall, ~32% of goals, ~59% of missed penalties.
+  playerName: string | null;
+  teamSide: 'home' | 'away';
+  // { extra, assist, incomingPlayer, comments } — all optional, and the whole
+  // object is null on ~39% of rows. `extra` carries stoppage time (116 rows),
+  // `incomingPlayer` the player coming on for a substitution (1,018 rows).
+  metadata: {
+    extra?: string | number | null;
+    assist?: string | null;
+    incomingPlayer?: string | null;
+    comments?: string | null;
+  } | null;
+  createdAt: string;
+}
+
 export interface Commentary {
   id: number;
   matchId: number;
