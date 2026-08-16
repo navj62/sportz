@@ -3,6 +3,11 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import type { Match, Competition } from '@/types';
 import { fetchMatches, fetchLiveMatches, fetchCompetitions } from '@/lib/api';
+import {
+  toCompetitionMap,
+  competitionNameOf,
+  type CompetitionMap,
+} from '@/lib/competitions';
 import { subscribe } from '@/lib/ws';
 import CompetitionBlock from '@/components/competition-block';
 import SectionHeader from '@/components/section-header';
@@ -31,7 +36,7 @@ interface Groups {
 
 function groupByCompetition(
   matches: Match[],
-  competitions: Map<number, Competition>,
+  competitions: CompetitionMap,
 ): Groups {
   const buckets = new Map<number, Match[]>();
   const singles: Match[] = [];
@@ -97,15 +102,6 @@ function BlockSkeleton() {
   );
 }
 
-function competitionNameOf(
-  match: Match,
-  competitions: Map<number, Competition>,
-): string | undefined {
-  return match.competitionId != null
-    ? competitions.get(match.competitionId)?.name
-    : undefined;
-}
-
 export default function HomePage() {
   const [liveMatches, setLiveMatches] = useState<Match[]>([]);
   const [competitions, setCompetitions] = useState<Competition[]>([]);
@@ -153,8 +149,8 @@ export default function HomePage() {
     });
   }, []);
 
-  const competitionMap = useMemo(
-    () => new Map(competitions.map((c) => [c.id, c])),
+  const competitionMap = useMemo<CompetitionMap>(
+    () => toCompetitionMap(competitions),
     [competitions],
   );
 
