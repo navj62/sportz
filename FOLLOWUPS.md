@@ -257,3 +257,26 @@ timeout was right, because healthy remote latency was overrunning a 5s budget,
 but it also means a genuinely degraded database now takes roughly four times as
 long to fail. That is the timeout's real cost, and it is why turning these
 knobs further is not the answer in CI.
+
+---
+
+## 11. `GET /matches` has no `competitionId` query param
+
+**Trigger: the match list needing to filter beyond the live sweep.**
+
+`listMatchesQuerySchema` accepts `limit`, `cursor`, `status`, `startTimeFrom`
+and `startTimeTo` — no `competitionId`. `listMatches` never destructures one,
+so a client that sends it has it stripped by Zod, silently, exactly as the
+removed `sport` param was.
+
+The home page therefore filters by competition **client-side**, over the whole
+live list it already sweeps (two or three requests at `limit=100`). That is
+correct while the surface only ever filters live matches, because the sweep is
+complete — but it does not extend to scheduled or finished, which are
+paginated, where a client-side filter would only ever see the loaded page.
+
+Add the param — destructure in `listMatches`, add to the schema, and note the
+whole-`params` cache key picks it up by existing — if the list ever filters
+beyond the live sweep.
+
+*(Carried unrecorded since the home-page pass; recorded here after the fact.)*
