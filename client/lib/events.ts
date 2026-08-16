@@ -116,7 +116,14 @@ export function eventLabel(event: MatchEvent): string {
     return reason ? `Goal disallowed · ${reason.toLowerCase()}` : 'Goal disallowed';
   }
 
-  if (category === 'other' && detail) return detail;
+  if (category === 'other') {
+    if (detail) return detail;
+    // The one null-detail row in 2,558 is a `Var`. Naming it as a VAR check is
+    // both more useful than "Event" and safely non-committal: a Var row with
+    // no detail does not say whether anything was overturned, so it must not
+    // borrow the disallowed treatment either.
+    if (event.type === 'Var') return 'VAR check';
+  }
 
   return CATEGORY_LABEL[category];
 }
