@@ -176,6 +176,23 @@ These come from things that have actually gone wrong here.
   indistinguishable. The same shape applies to configuration — an unsupported
   or misspelled option no-ops silently — so demonstrate the mechanism engaging
   before crediting a fix to it.
+- **A mutation lies in two directions; check both before trusting the result.**
+  It can fail to *apply* — a pattern that didn't match, wrong indentation — and
+  read as "survived". It can also fail to *parse* — a stray brace from a sloppy
+  slice — and read as "the guard was load-bearing", because a `SyntaxError`
+  exits non-zero exactly like the crash you were trying to reproduce. So prove
+  the mutation **applied** (print the mutated region) *and* **still parses**
+  (`node --check`, or `tsc` on the client) before reading anything into the exit
+  code. Both failures produce the same false-valid signal, and neither is
+  visible in the pass/fail line. This has already happened here: a malformed
+  mutation of `src/db/db.js` "reproduced" a crash that was actually a parse
+  error.
+- **"Mutation-proven" means proven for the failure mode you reproduced** — not
+  that the class of bug is closed. The `pg` pool fix is the case: the idle-client
+  mutation was rigorous and the fix real, but it said nothing about errors
+  emitted on a *checked-out* client, a second unhandled path nobody had
+  identified yet, which kept crashing the process. State what was reproduced,
+  not what feels covered.
 - **Any script that mutates a database must print which database it targets
   before doing so.**
 - **Recon first on non-trivial changes.** Surface contradictions before writing
