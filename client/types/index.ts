@@ -78,21 +78,6 @@ export interface MatchEvent {
   createdAt: string;
 }
 
-export interface Commentary {
-  id: number;
-  matchId: number;
-  minute: number | null;
-  sequence: number;
-  period: string | null;
-  eventType: string;
-  actor: string | null;
-  team: string | null;
-  message: string;
-  metadata: Record<string, unknown> | null;
-  tags: string[] | null;
-  createdAt: string;
-}
-
 export interface PaginatedResponse<T> {
   data: T[];
   nextCursor: number | null;

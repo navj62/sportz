@@ -1,103 +1,131 @@
 'use client';
-import { useState, useEffect } from 'react';
+
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import type { Match } from '@/types';
-import { fetchMatch } from '@/lib/api';
-import { subscribe } from '@/lib/ws';
-import ScoreHeader from '@/components/score-header';
-import CommentaryFeed from '@/components/commentary-feed';
+import type { Match, MatchEvent, Competition } from '@/types';
+import { fetchMatch, fetchMatchEvents } from '@/lib/api';
+import { fetchCompetitionMap, competitionOf } from '@/lib/competitions';
+import MatchHeader from '@/components/match-header';
+import EventList from '@/components/event-list';
+import SectionHeader from '@/components/section-header';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 
-function ScoreHeaderSkeleton() {
+/* No tabs. Lineups, stats and head-to-head are not in this build's data, and
+   three tabs that each say "not available" would make absence the dominant
+   feature of a page that is already thin — most fixtures carry one or two
+   events. One honest view reads more finished than four, three of which are
+   apologies.
+
+   No WebSocket subscription here: live push is its own pass. This fetches
+   once. */
+
+function HeaderSkeleton() {
   return (
-    <div className="rounded-xl border border-(--border) bg-(--card) p-6 mb-6">
-      <div className="flex items-center justify-between mb-4">
-        <Skeleton className="h-3 w-16" />
-        <Skeleton className="h-5 w-16 rounded-full" />
+    <div className="overflow-hidden rounded-[8px] bg-surface-raised ring-1 ring-stroke">
+      <div className="flex items-center gap-2.5 border-b border-stroke bg-surface-elevated px-4 py-2.5">
+        <Skeleton className="h-4 w-4 rounded-full" />
+        <Skeleton className="h-3 w-40" />
       </div>
-      <div className="flex items-center gap-4">
-        <div className="flex-1 space-y-3">
-          <Skeleton className="h-5 w-40" />
-          <Skeleton className="h-5 w-36" />
-        </div>
-        <div className="space-y-2">
-          <Skeleton className="h-10 w-12" />
-          <Skeleton className="h-10 w-12" />
-        </div>
+      <div className="flex items-start gap-8 px-4 py-8">
+        {[0, 1].map((i) => (
+          <div key={i} className="flex flex-1 flex-col items-center gap-3">
+            <Skeleton className="h-14 w-14 rounded-full" />
+            <Skeleton className="h-5 w-32" />
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
-export default function MatchDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default function MatchDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
   const [id, setId] = useState<string | null>(null);
   const [match, setMatch] = useState<Match | null>(null);
+  const [events, setEvents] = useState<MatchEvent[]>([]);
+  const [competition, setCompetition] = useState<Competition | undefined>();
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.resolve(params).then((p) => setId(p.id));
   }, [params]);
 
-  useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-    fetchMatch(id)
-      .then((data) => {
-        if (cancelled) return;
-        if (!data) { setMissing(true); return; }
-        setMatch(data);
-      })
-      .catch(console.error)
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [id]);
+  const load = useCallback(async (matchId: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchMatch(matchId);
+      if (!data) {
+        setMissing(true);
+        return;
+      }
+      setMatch(data);
+
+      // Events and the competition lookup are independent of each other and
+      // neither is worth failing the page over — the score is the product, and
+      // it has already arrived by this point.
+      const [eventResult, mapResult] = await Promise.allSettled([
+        fetchMatchEvents(matchId),
+        fetchCompetitionMap(),
+      ]);
+      if (eventResult.status === 'fulfilled') setEvents(eventResult.value);
+      if (mapResult.status === 'fulfilled') {
+        setCompetition(competitionOf(data, mapResult.value));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (!id) return;
-    const numId = Number(id);
-    return subscribe((msg) => {
-      if (msg.type !== 'live_scores' || !msg.data) return;
-      const updated = msg.data.find((m) => m.id === numId);
-      if (updated) setMatch((prev) => (prev ? { ...prev, ...updated } : prev));
-    });
-  }, [id]);
-
-  if (missing) {
-    return (
-      <div className="container mx-auto px-4 py-20 max-w-4xl text-center">
-        <p className="font-medium text-(--muted-foreground)">Match not found</p>
-        <Link href="/" className="text-sm text-(--muted-foreground) hover:text-(--foreground) mt-2 inline-block">
-          Back to matches
-        </Link>
-      </div>
-    );
-  }
+    if (id) load(id);
+  }, [id, load]);
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-4xl">
+    <div className="mx-auto w-full max-w-4xl px-4 py-8">
       <Link
         href="/"
-        className="inline-flex items-center gap-1 text-sm text-(--muted-foreground) hover:text-(--foreground) mb-6 transition-colors"
+        className="type-label mb-6 inline-flex items-center gap-1 text-fg-secondary transition-colors hover:text-fg"
       >
-        Back to matches
+        ← All matches
       </Link>
 
-      {loading ? (
-        <>
-          <ScoreHeaderSkeleton />
-          <div className="space-y-4">
-            {[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-14 w-full" />)}
-          </div>
-        </>
+      {missing ? (
+        <div className="rounded-[8px] bg-surface-raised px-6 py-16 text-center ring-1 ring-stroke">
+          <p className="type-h2 text-fg">Match not found</p>
+          <p className="type-body mt-2 text-fg-secondary">
+            It may have been removed, or the link may be wrong.
+          </p>
+        </div>
+      ) : error ? (
+        <div className="rounded-[8px] bg-surface-raised px-6 py-16 text-center ring-1 ring-stroke">
+          <p className="type-h2 text-fg">Can&rsquo;t reach the scores right now</p>
+          <p className="type-body mx-auto mt-2 max-w-sm text-fg-secondary">
+            The scores service didn&rsquo;t respond.
+          </p>
+          <Button className="mt-6" onClick={() => id && load(id)}>
+            Try again
+          </Button>
+        </div>
+      ) : loading ? (
+        <HeaderSkeleton />
       ) : match ? (
         <>
-          <ScoreHeader match={match} />
-          <div>
-            <h2 className="text-sm font-semibold text-(--muted-foreground) uppercase tracking-wide mb-4">
-              Commentary
-            </h2>
-            <CommentaryFeed matchId={id!} />
+          <MatchHeader match={match} competition={competition} events={events} />
+
+          <div className="mt-10">
+            <SectionHeader title="Match events" meta={events.length || undefined} />
+            <div className="overflow-hidden rounded-[8px] bg-surface-raised ring-1 ring-stroke">
+              <EventList events={events} match={match} />
+            </div>
           </div>
         </>
       ) : null}

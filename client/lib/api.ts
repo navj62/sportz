@@ -2,7 +2,6 @@ import type {
   Match,
   Competition,
   MatchEvent,
-  Commentary,
   PaginatedResponse,
 } from '@/types';
 
@@ -118,22 +117,4 @@ export async function fetchMatchEvents(
   if (!res.ok) throw new Error(`Failed to fetch events: ${res.status}`);
   const body = (await res.json()) as { data: MatchEvent[] };
   return body.data;
-}
-
-export interface CommentaryFilters {
-  limit?: number;
-  cursor?: number;
-}
-
-export async function fetchCommentary(
-  matchId: string | number,
-  filters: CommentaryFilters = {},
-): Promise<PaginatedResponse<Commentary>> {
-  const { limit = 20, cursor } = filters;
-  const params = new URLSearchParams({ limit: String(limit) });
-  if (cursor) params.set('cursor', String(cursor));
-
-  const res = await fetch(`${BASE}/matches/${matchId}/commentary?${params}`);
-  if (!res.ok) throw new Error(`Failed to fetch commentary: ${res.status}`);
-  return res.json() as Promise<PaginatedResponse<Commentary>>;
 }
