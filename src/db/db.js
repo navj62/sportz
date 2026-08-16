@@ -49,6 +49,28 @@ function init() {
     );
   });
 
+  // The pool listener above is not enough on its own. pg-pool forwards only
+  // IDLE client errors to the pool — it attaches its `idleListener` on release
+  // and removes it on checkout — so an error emitted on a client that is
+  // checked out or still connecting reaches no listener and crashes the
+  // process anyway. That is a distinct path with a distinct stack:
+  //
+  //     Error: Connection terminated unexpectedly
+  //       at Connection.<anonymous> (pg/lib/client.js:193)
+  //     Emitted 'error' event on Client instance at:
+  //       at Client._handleErrorEvent (pg/lib/client.js:411)
+  //
+  // Attaching a listener at connect time, and never removing it, guarantees
+  // every client has one for its whole life whatever the pool is doing with
+  // it. pg-pool's own idle handling is unaffected — listeners are additive.
+  poolInstance.on("connect", (client) => {
+    client.on("error", (error) => {
+      console.error(
+        `[db] client error (${error?.code ?? "no code"}): ${error?.message ?? error}. Client will be discarded; pool continues.`,
+      );
+    });
+  });
+
   dbInstance = drizzle(poolInstance);
 }
 
