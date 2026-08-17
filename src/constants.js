@@ -26,3 +26,16 @@ export const LIVE_SYNC_LOCK_KEY = 'live-sync:poll';
 // instances briefly poll together (wasted quota, and the upserts are idempotent
 // anyway), too long means one skipped cycle. Neither corrupts data.
 export const LIVE_SYNC_LOCK_TTL_SECONDS = 60;
+
+// Caps how many match ids one WebSocket may narrow itself to. Nothing bounded
+// this before, so a client looping `{"type":"subscribe"}` with rising ids grew
+// both socket.subscriptions and the module-level matchSubscribers without
+// limit. Arcjet does not cover it: wsArcjet rate-limits the UPGRADE, not
+// messages on an already-open socket, and maxPayload bounds one frame's size
+// rather than how many arrive.
+//
+// 20 is generous against the only pattern that exists: the detail page narrows
+// to exactly ONE match, and the list deliberately holds no subscriptions at all
+// (an empty set means every match). A cap set near the real usage would fail
+// users while looking like a bug, so this leaves an order of magnitude of room.
+export const MAX_SUBSCRIPTIONS_PER_SOCKET = 20;

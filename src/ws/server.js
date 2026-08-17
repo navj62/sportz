@@ -1,6 +1,7 @@
 import WebSocket, { WebSocketServer } from "ws";
 import { wsArcjet } from "../arcjet.js";
 import { logger } from "../logger.js";
+import { MAX_SUBSCRIPTIONS_PER_SOCKET } from "../constants.js";
 
 const matchSubscribers = new Map();
 
@@ -36,6 +37,23 @@ function handleMessage(socket, data) {
         return;
     }
     if (message?.type === 'subscribe' && Number.isInteger(message.matchId)) {
+        // Re-subscribing to an id already held is idempotent and must not count
+        // against the cap — a client replaying its intent after a reconnect
+        // would otherwise be refused for asking for what it already has.
+        const alreadyHeld = socket.subscriptions.has(message.matchId);
+
+        if (!alreadyHeld && socket.subscriptions.size >= MAX_SUBSCRIPTIONS_PER_SOCKET) {
+            // Refused out loud rather than dropped. A client that believes it
+            // subscribed and then receives nothing is indistinguishable from a
+            // backend that has stopped pushing, which is the worst possible
+            // failure on a live-score surface.
+            sendJson(socket, {
+                type: 'error',
+                error: `Subscription limit reached (${MAX_SUBSCRIPTIONS_PER_SOCKET})`,
+            });
+            return;
+        }
+
         subscribe(message.matchId, socket);
         socket.subscriptions.add(message.matchId);
         sendJson(socket, { type: 'subscribed', matchId: message.matchId });
@@ -59,18 +77,22 @@ function sendJson(socket, payload) {
  * This reads backwards at first glance, and "correcting" it to empty-means-none
  * would be a silent, total outage of live updates. Do not.
  *
- * Nothing in the frontend sends a `subscribe` frame — its exported subscribe()
- * registers a local listener and never touches the wire, so in production
- * EVERY socket has an empty set. Under empty-means-none the server would
- * deliver nothing to anyone: no error, no closed socket, no failed request,
- * just scores that quietly stop moving. There is no signal that would catch it.
+ * The MATCH LIST relies on it and holds no subscriptions at all: it wants every
+ * match, and subscribing to each visible id would mean re-subscribing on every
+ * filter change and page load. Under empty-means-none it would receive nothing:
+ * no error, no closed socket, no failed request, just scores that quietly stop
+ * moving. There is no signal that would catch it.
  *
- * It is also the right semantic independently of that. The match list renders
- * ~20 paginated matches and would have to subscribe to every visible id and
- * re-subscribe on each filter change or page load; it genuinely wants the whole
- * feed. Per-match filtering is for the detail view, which follows one match.
- * So: no subscriptions means "everything", and a subscription is an opt-in
- * narrowing.
+ * The MATCH DETAIL page does send `subscribe` / `unsubscribe` frames (see
+ * subscribeToMatch in client/lib/ws.ts), so both shapes are now live against
+ * this one server — a narrowed socket for one match, an empty one for the whole
+ * feed. A subscription is an opt-in narrowing; its absence is not a request for
+ * silence.
+ *
+ * Because both share ONE client socket, a subscription that outlives the page
+ * that wanted it narrows the LIST to a single match rather than failing loudly.
+ * That is why the client owns its subscription set as intent and replays it on
+ * reconnect, rather than firing frames and forgetting them.
  *
  * Returns the SAME array reference when nothing is narrowed, which lets the
  * caller reuse one serialization for every unsubscribed socket.

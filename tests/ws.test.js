@@ -19,6 +19,8 @@ const {
     __subscriberCountForTests,
 } = await import('../src/ws/server.js');
 
+const { MAX_SUBSCRIPTIONS_PER_SOCKET } = await import('../src/constants.js');
+
 // Real ws sockets against a real HTTP server on an ephemeral port — no mocked
 // sockets. The subscription map and the broadcast are only meaningful in terms
 // of what a client actually receives over the wire.
@@ -219,6 +221,92 @@ describe('WebSocket server — subscription bookkeeping', () => {
         socket.close();
 
         expect(await waitFor(() => __subscriberCountForTests(42) === 0)).toBe(true);
+    });
+});
+
+describe('WebSocket server — subscription cap', () => {
+    it('accepts subscriptions up to the cap', async () => {
+        const { socket, messages } = await openClient();
+
+        for (let i = 1; i <= MAX_SUBSCRIPTIONS_PER_SOCKET; i++) {
+            send(socket, { type: 'subscribe', matchId: i });
+        }
+
+        await waitFor(() => messages.length >= MAX_SUBSCRIPTIONS_PER_SOCKET + 1);
+        const acks = messages.filter((m) => m.type === 'subscribed');
+        expect(acks).toHaveLength(MAX_SUBSCRIPTIONS_PER_SOCKET);
+        expect(messages.some((m) => m.type === 'error')).toBe(false);
+        expect(__subscriberCountForTests(MAX_SUBSCRIPTIONS_PER_SOCKET)).toBe(1);
+    });
+
+    it('refuses the one past the cap with an error, and does not register it', async () => {
+        const { socket, messages } = await openClient();
+
+        for (let i = 1; i <= MAX_SUBSCRIPTIONS_PER_SOCKET; i++) {
+            send(socket, { type: 'subscribe', matchId: i });
+        }
+        await waitFor(() => messages.filter((m) => m.type === 'subscribed').length === MAX_SUBSCRIPTIONS_PER_SOCKET);
+
+        const overflowId = MAX_SUBSCRIPTIONS_PER_SOCKET + 1;
+        send(socket, { type: 'subscribe', matchId: overflowId });
+
+        await waitFor(() => messages.some((m) => m.type === 'error'));
+        const error = messages.find((m) => m.type === 'error');
+        expect(error.error).toContain('Subscription limit reached');
+        // The refusal is what matters: the id must not be registered anywhere.
+        expect(__subscriberCountForTests(overflowId)).toBe(0);
+        expect(messages.some((m) => m.type === 'subscribed' && m.matchId === overflowId)).toBe(false);
+        // Refused, not disconnected.
+        expect(socket.readyState).toBe(WebSocket.OPEN);
+    });
+
+    it('does not count a re-subscribe to an id already held against the cap', async () => {
+        const { socket, messages } = await openClient();
+
+        for (let i = 1; i <= MAX_SUBSCRIPTIONS_PER_SOCKET; i++) {
+            send(socket, { type: 'subscribe', matchId: i });
+        }
+        await waitFor(() => messages.filter((m) => m.type === 'subscribed').length === MAX_SUBSCRIPTIONS_PER_SOCKET);
+
+        // This is what the client does after a reconnect: replay its intent.
+        send(socket, { type: 'subscribe', matchId: 1 });
+
+        await waitFor(() => messages.filter((m) => m.type === 'subscribed').length === MAX_SUBSCRIPTIONS_PER_SOCKET + 1);
+        expect(messages.some((m) => m.type === 'error')).toBe(false);
+        expect(__subscriberCountForTests(1)).toBe(1);
+    });
+
+    it('frees a slot on unsubscribe, so the cap is a ceiling not a lifetime budget', async () => {
+        const { socket, messages } = await openClient();
+
+        for (let i = 1; i <= MAX_SUBSCRIPTIONS_PER_SOCKET; i++) {
+            send(socket, { type: 'subscribe', matchId: i });
+        }
+        await waitFor(() => messages.filter((m) => m.type === 'subscribed').length === MAX_SUBSCRIPTIONS_PER_SOCKET);
+
+        send(socket, { type: 'unsubscribe', matchId: 1 });
+        await waitFor(() => messages.some((m) => m.type === 'unsubscribed'));
+
+        const freshId = 9999;
+        send(socket, { type: 'subscribe', matchId: freshId });
+
+        expect(await waitFor(() => __subscriberCountForTests(freshId) === 1)).toBe(true);
+        expect(messages.some((m) => m.type === 'error')).toBe(false);
+    });
+
+    it('caps each socket independently', async () => {
+        const a = await openClient();
+        const b = await openClient();
+
+        for (let i = 1; i <= MAX_SUBSCRIPTIONS_PER_SOCKET; i++) {
+            send(a.socket, { type: 'subscribe', matchId: i });
+        }
+        await waitFor(() => a.messages.filter((m) => m.type === 'subscribed').length === MAX_SUBSCRIPTIONS_PER_SOCKET);
+
+        send(b.socket, { type: 'subscribe', matchId: 4242 });
+
+        expect(await waitFor(() => __subscriberCountForTests(4242) === 1)).toBe(true);
+        expect(b.messages.some((m) => m.type === 'error')).toBe(false);
     });
 });
 
