@@ -188,9 +188,23 @@ of stale data.
 
 ---
 
-## 9. Cap per-socket subscriptions before the frontend starts subscribing
+## 9. Cap per-socket subscriptions before the frontend starts subscribing — RESOLVED
 
-**Trigger: the frontend beginning to send `subscribe` frames.**
+**The trigger fired and the cap shipped.** The match detail page now sends
+`subscribe` / `unsubscribe` frames (`subscribeToMatch` in `client/lib/ws.ts`),
+so the handler became reachable in production, and
+`MAX_SUBSCRIPTIONS_PER_SOCKET = 20` now guards it in `src/ws/server.js`. At the
+cap the frame is refused with an `error` rather than dropped silently, and a
+re-subscribe to an id already held is exempt so a client replaying intent after
+a reconnect is not punished for asking for what it has. Five tests cover it,
+mutation-tested in both directions.
+
+The reasoning below is kept because the sizing argument is the part that will
+matter if the pattern ever changes — the cap is generous against ONE
+subscription per detail page and none for the list, and a list view that ever
+opted in would need roughly one per visible row.
+
+**Trigger (fired): the frontend beginning to send `subscribe` frames.**
 
 Nothing limits how many match ids one socket may subscribe to.
 `socket.subscriptions` and the module-level `matchSubscribers` both grow for
@@ -280,3 +294,46 @@ whole-`params` cache key picks it up by existing — if the list ever filters
 beyond the live sweep.
 
 *(Carried unrecorded since the home-page pass; recorded here after the fact.)*
+
+---
+
+## 12. The test suite shares the dev Redis, so cache tests can be contaminated
+
+**REASONED, NOT CONFIRMED.** The mechanism below is inferred from the failure
+shape and the absent env var; it was not proven, because the running backend
+could not be cleanly stopped to test the hypothesis in isolation. Treat it as
+the leading explanation, not a diagnosis.
+
+`tests/setup.js` redirects `DATABASE_URL` to `TEST_DATABASE_URL`, and the
+integration suites refuse to run if that redirect did not take. **There is no
+equivalent for Redis.** `.env` defines `UPSTASH_REDIS_REST_URL` /
+`UPSTASH_REDIS_REST_TOKEN` and nothing else, so the suite and a locally running
+backend read and write the same Upstash instance and the same cache keys.
+
+Observed during the live-behaviour pass: two failures in
+`tests/cachedReads.test.js`, both on `/competitions` —
+
+- `GET /competitions: cold miss then warm hit` — expected `{ hits: 1, misses: 1 }`,
+  got `status: 'cold'`
+- `caches /competitions for 3600s — near-static data` — the `cacheSet` spy was
+  never called with the 3600 TTL
+
+Both are assertions about a **cold** cache. A dev backend that has served
+`/competitions` leaves that key warm for its 3600s TTL, at which point the
+service under test finds a hit, never calls `cacheSet`, and the counters never
+show the expected miss. That fits both failures exactly.
+
+Note what makes this hard to notice: the failures reproduce with unrelated
+changes stashed, so they read as pre-existing flakiness — and they overlap with
+followup 10's cold-Neon latency story, which is a *different* cause with a
+similar signature. They are not the same problem: this one is contamination
+from a shared key, not slowness.
+
+The fix is an isolated `TEST_UPSTASH_REST_URL` / `TEST_UPSTASH_REST_TOKEN` pair
+redirected in `tests/setup.js` exactly as `TEST_DATABASE_URL` is, ideally with
+the same refuse-to-run guard comparing hosts — the database redirect exists
+because it once silently no-opped, and this is the same failure mode one
+dependency over. A key prefix per run would also work and needs no second
+instance, but it leaves the two processes sharing an eviction budget.
+
+Until then: cache tests are only trustworthy with no local backend running.
