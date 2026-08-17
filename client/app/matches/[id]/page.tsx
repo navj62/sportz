@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { Match, MatchEvent, Competition } from '@/types';
 import { fetchMatch, fetchMatchEvents } from '@/lib/api';
 import { fetchCompetitionMap, competitionOf } from '@/lib/competitions';
+import { subscribe, subscribeToMatch } from '@/lib/ws';
 import MatchHeader from '@/components/match-header';
 import EventList from '@/components/event-list';
 import SectionHeader from '@/components/section-header';
@@ -15,10 +16,7 @@ import { Skeleton } from '@/components/ui/skeleton';
    three tabs that each say "not available" would make absence the dominant
    feature of a page that is already thin — most fixtures carry one or two
    events. One honest view reads more finished than four, three of which are
-   apologies.
-
-   No WebSocket subscription here: live push is its own pass. This fetches
-   once. */
+   apologies. */
 
 function HeaderSkeleton() {
   return (
@@ -88,6 +86,33 @@ export default function MatchDetailPage({
   useEffect(() => {
     if (id) load(id);
   }, [id, load]);
+
+  /**
+   * Narrows the socket to this one match, which is what activates the server's
+   * per-match filtering — until now every socket carried an empty subscription
+   * set, and `subscribedMatches` was serving the whole firehose to everyone.
+   *
+   * The id has to come from the loaded match rather than the route param: the
+   * server gates on `Number.isInteger(matchId)`, and the param is a string.
+   */
+  // Depends on the numeric id, not the match object: a score update replaces
+  // `match`, and re-running these on every update would tear the subscription
+  // down and rebuild it on every goal.
+  const numericId = match?.id ?? null;
+
+  useEffect(() => {
+    if (numericId == null) return;
+    return subscribeToMatch(numericId);
+  }, [numericId]);
+
+  useEffect(() => {
+    if (numericId == null) return;
+    return subscribe((msg) => {
+      if (msg.type !== 'live_scores' || !msg.data) return;
+      const update = msg.data.find((m) => m.id === numericId);
+      if (update) setMatch((prev) => (prev ? { ...prev, ...update } : prev));
+    });
+  }, [numericId]);
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-8">

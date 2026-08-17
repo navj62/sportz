@@ -1,7 +1,10 @@
+'use client';
+
 import Link from 'next/link';
 import type { Match } from '@/types';
 import CompetitionLogo from '@/components/competition-logo';
 import { LiveBadge } from '@/components/live-badge';
+import { useScoreFlash } from '@/lib/use-score-flash';
 
 /**
  * One match, on one line.
@@ -103,6 +106,8 @@ export default function MatchRow({
     startTime,
   } = match;
 
+  const flash = useScoreFlash(homeScore, awayScore);
+
   const hasScore = status !== 'scheduled';
   const settled = status === 'finished';
   // A finished match reads back as a result, so the losing side recedes. A live
@@ -153,7 +158,13 @@ export default function MatchRow({
 
           {hasScore && !interrupted ? (
             <span className="numeral text-[1.0625rem] font-extrabold leading-none tracking-[-0.02em] text-fg">
-              {homeScore}&ndash;{awayScore}
+              <span className={flash.home ? 'inline-block animate-score-flash' : undefined}>
+                {homeScore}
+              </span>
+              &ndash;
+              <span className={flash.away ? 'inline-block animate-score-flash' : undefined}>
+                {awayScore}
+              </span>
             </span>
           ) : (
             <span className="numeral text-[0.9375rem] font-bold leading-none text-fg-secondary">

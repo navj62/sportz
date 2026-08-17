@@ -1,8 +1,11 @@
+'use client';
+
 import type { Match, MatchEvent, Competition } from '@/types';
 import { LiveBadge } from '@/components/live-badge';
 import { Badge } from '@/components/ui/badge';
 import CompetitionLogo from '@/components/competition-logo';
 import { isGoal, formatMinute, isOwnGoal } from '@/lib/events';
+import { useScoreFlash } from '@/lib/use-score-flash';
 
 /**
  * The single-match header.
@@ -156,6 +159,8 @@ export default function MatchHeader({
     startTime,
   } = match;
 
+  const flash = useScoreFlash(homeScore, awayScore);
+
   const hasScore = status !== 'scheduled' && status !== 'cancelled';
   const settled = status === 'finished';
   const dimHome = settled && homeScore < awayScore;
@@ -185,7 +190,13 @@ export default function MatchHeader({
         <div className="flex shrink-0 flex-col items-center gap-2 pt-4">
           {hasScore ? (
             <span className="type-score text-fg">
-              {homeScore}&ndash;{awayScore}
+              <span className={flash.home ? 'inline-block animate-score-flash' : undefined}>
+                {homeScore}
+              </span>
+              &ndash;
+              <span className={flash.away ? 'inline-block animate-score-flash' : undefined}>
+                {awayScore}
+              </span>
             </span>
           ) : (
             <span className="numeral text-[2rem] font-extrabold leading-none text-fg-secondary">
