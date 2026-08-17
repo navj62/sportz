@@ -68,7 +68,14 @@ function connect() {
   socket.onclose = () => {
     socket = null;
     setStatus('disconnected');
-    if (!explicitlyClosed && listeners.size > 0) {
+    // Either kind of subscriber sustains reconnection. Gating on message
+    // listeners alone left a real hole: on the detail page a failed initial
+    // fetch means no match, so no message listener is ever registered — only
+    // the status indicator. The socket would then report Offline correctly and
+    // NEVER retry, so the page stayed dead after the backend came back and only
+    // a manual reload recovered it. This mirrors maybeDisconnect below, which
+    // already treats both sets as keeping the socket alive.
+    if (!explicitlyClosed && (listeners.size > 0 || statusListeners.size > 0)) {
       reconnectTimer = setTimeout(connect, 3000);
     }
   };
