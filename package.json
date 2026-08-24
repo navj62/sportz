@@ -1,19 +1,26 @@
 {
   "name": "sportz",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js",
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:crud": "node src/index.js"
+    "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
+    "@arcjet/inspect": "^1.5.0",
+    "@arcjet/node": "^1.5.0",
+    "@upstash/redis": "^1.38.2",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
-    "pg": "^8.21.0"
+    "pg": "^8.21.0",
+    "pino": "^10.3.1",
+    "pino-http": "^11.0.0",
+    "ws": "^8.21.0",
+    "zod": "^4.4.3"
   },
   "keywords": [],
   "author": "",
@@ -21,6 +28,8 @@
   "description": "",
   "type": "module",
   "devDependencies": {
-    "drizzle-kit": "^0.31.10"
+    "drizzle-kit": "^0.31.10",
+    "supertest": "^7.2.2",
+    "vitest": "^4.1.9"
   }
 }

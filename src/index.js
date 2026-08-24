@@ -1,53 +1,42 @@
-import { eq } from "drizzle-orm";
-import { db, pool } from "./db.js";
-import { demoUsers } from "./schema.js";
+import 'dotenv/config';
+import http from 'http';
+import { createApp } from './app.js';
+import { attachWebSocketServer } from './ws/server.js';
+import { startLiveSync, stopLiveSync } from './services/liveSync.js';
+import { logger } from './logger.js';
+import { pool } from './db/db.js';
+import { initRedis } from './redis/client.js';
 
-async function main() {
-  try {
-    console.log("Performing CRUD operations...");
+const PORT = process.env.PORT ?? 8000;
+const HOST = process.env.HOST;
 
-    const [newUser] = await db
-      .insert(demoUsers)
-      .values({ name: "Admin User", email: "admin@example.com" })
-      .returning();
+initRedis();
 
-    if (!newUser) {
-      throw new Error("Failed to create user");
-    }
+const app = createApp();
+const server = http.createServer(app);
 
-    console.log("✅ CREATE: New user created:", newUser);
+const { broadcastLiveScores } = attachWebSocketServer(server);
 
-    const foundUser = await db
-      .select()
-      .from(demoUsers)
-      .where(eq(demoUsers.id, newUser.id));
-    console.log("✅ READ: Found user:", foundUser[0]);
+startLiveSync({ broadcast: broadcastLiveScores });
 
-    const [updatedUser] = await db
-      .update(demoUsers)
-      .set({ name: "Super Admin" })
-      .where(eq(demoUsers.id, newUser.id))
-      .returning();
+server.listen(PORT, HOST, () => {
+    const baseUrl = HOST === '0.0.0.0'
+        ? `http://localhost:${PORT}`
+        : `http://${HOST ?? 'localhost'}:${PORT}`;
 
-    if (!updatedUser) {
-      throw new Error("Failed to update user");
-    }
+    logger.info({ url: baseUrl }, 'HTTP server listening');
+    logger.info({ url: baseUrl.replace('http', 'ws') + '/ws' }, 'WebSocket server listening');
+});
 
-    console.log("✅ UPDATE: User updated:", updatedUser);
-
-    await db.delete(demoUsers).where(eq(demoUsers.id, newUser.id));
-    console.log("✅ DELETE: User deleted.");
-
-    console.log("\nCRUD operations completed successfully.");
-  } catch (error) {
-    console.error("❌ Error performing CRUD operations:", error);
-    process.exit(1);
-  } finally {
-    if (pool) {
-      await pool.end();
-      console.log("Database pool closed.");
-    }
-  }
+function shutdown(signal) {
+    logger.info({ signal }, 'Shutdown signal received, draining connections');
+    stopLiveSync();
+    server.close(async () => {
+        await pool.end();
+        logger.info('Graceful shutdown complete');
+        process.exit(0);
+    });
 }
 
-main();
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

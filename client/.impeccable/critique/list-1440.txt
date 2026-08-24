@@ -1,0 +1,58 @@
+URL: http://localhost:3000/   VIEWPORT: 1440x900
+TITLE: Sportz — Live Scores
+<html lang>: "en"
+viewport meta: width=device-width, initial-scale=1
+body bg: rgb(10, 13, 17)
+h1: {"text":"Matches","size":"24px","weight":"700","stretch":"100%","family":"Archivo, \"Archivo Fallback\", ui-sans-serif, system-ui, sans-serif"}
+font-family resolved: Archivo, "Archivo Fallback", ui-sans-serif, system-ui, sans-serif
+horizontal overflow: {"docW":1440,"clientW":1440,"overflow":false}
+
+--- RENDERED BODY TEXT ---
+SPORTZ
+Offline
+Matches
+
+Live scores update automatically
+
+All
+Live
+Scheduled
+Finished
+
+🏟
+
+No matches found
+
+Try adjusting your filters
+
+--- INTERACTIVE HIT AREAS ---
+[{"tag":"A","txt":"SPORTZ","w":58,"h":26,"under44":true},{"tag":"BUTTON","txt":"All","w":40,"h":32,"under44":true},{"tag":"BUTTON","txt":"Live","w":50,"h":32,"under44":true},{"tag":"BUTTON","txt":"Scheduled","w":92,"h":32,"under44":true},{"tag":"BUTTON","txt":"Finished","w":78,"h":32,"under44":true},{"tag":"INPUT","txt":"Filter by sport…","w":192,"h":36,"under44":true}]
+
+--- CONSOLE (3) ---
+[console.info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[console.log] [HMR] connected
+[console.error] Error: Failed to fetch matches: 500
+    at fetchMatches (webpack-internal:///(app-pages-browser)/./lib/api.ts:21:24)
+
+--- LOG ENTRIES (4) ---
+[log.error] Failed to load resource: the server responded with a status of 500 (Internal Server Error) http://localhost:3000/backend/matches?limit=20
+[log.error] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED webpack-internal:///(app-pages-browser)/./lib/ws.ts
+[log.warning] The resource http://localhost:3000/_next/static/media/c214ffb7f5362987-s.p.woff2?v=1786778515665 was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally. http://localhost:3000/
+[log.error] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED webpack-internal:///(app-pages-browser)/./lib/ws.ts
+
+--- NETWORK FAILURES (0) ---
+
+--- NETWORK RESPONSES ---
+[net] 200 http://localhost:3000/
+[net] 200 http://localhost:3000/_next/static/css/app/layout.css?v=1786778515665
+[net] 200 http://localhost:3000/_next/static/media/c214ffb7f5362987-s.p.woff2?v=1786778515665
+[net] 200 http://localhost:3000/_next/static/chunks/webpack.js?v=1786778515665
+[net] 200 http://localhost:3000/_next/static/chunks/app/layout.js
+[net] 200 http://localhost:3000/_next/static/chunks/app-pages-internals.js
+[net] 200 http://localhost:3000/_next/static/chunks/app/page.js
+[net] 200 http://localhost:3000/_next/static/media/c214ffb7f5362987-s.p.woff2
+[net] 200 http://localhost:3000/_next/static/chunks/main-app.js?v=1786778515665
+[net] 200 http://localhost:3000/favicon.ico?603d046c9a6fdfbb
+[net] 500 http://localhost:3000/backend/matches?limit=20
+[net] 200 http://localhost:3000/__nextjs_font/geist-latin.woff2
+[net] 200 http://localhost:3000/__nextjs_original-stack-frames
