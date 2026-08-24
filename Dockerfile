@@ -8,6 +8,11 @@ RUN npm ci --omit=dev
 
 COPY . .
 
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
+    chown -R appuser:appgroup /app
+
+USER appuser
+
 EXPOSE 8000
 
-CMD ["node", "index.js"]
+CMD ["node", "src/index.js"]
