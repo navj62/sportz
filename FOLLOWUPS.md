@@ -337,3 +337,44 @@ dependency over. A key prefix per run would also work and needs no second
 instance, but it leaves the two processes sharing an eviction budget.
 
 Until then: cache tests are only trustworthy with no local backend running.
+
+---
+
+## 13. Reconciled matches can carry a final score their events do not explain
+
+**Trigger: moving off the API-Football free tier, or any change that gives the
+poller spare daily quota.**
+
+Reconciliation tier 2 (`confirmDepartures` in `src/services/liveSync.js`)
+confirms a departed match against `/fixtures?date=` and writes back the real
+final score. That endpoint does **not** embed events, unlike
+`/fixtures?live=all`, which is the only reason one request can cover every
+departure for a date at once.
+
+So a goal scored after the last live poll lands in the corrected **score** but
+never reaches the `events` table. A match can read 2-1 with one goal event. The
+score is right — that is the whole point of confirming rather than inferring —
+but the event list is a snapshot from whenever the fixture was last seen live,
+and nothing later reconciles it.
+
+This is the same class of accepted tradeoff as the backfill's stale scores
+(`scripts/backfill-stuck-live-matches.js`), and it is strictly an improvement on
+what preceded it: before tier 2 the score was wrong *and* the events were
+stale. Now only the events are.
+
+Closing it needs one `/fixtures/events?fixture=` request **per departed match** —
+`fetchFixtureEvents` already exists and has no caller. That is per-match rather
+than per-date, so it does not fit the budget: the free tier allows 100
+requests/day and the current plan already spends 97 of them (72 live poll at
+20 min + 24 worst-case confirm sweeps + 1 boot `/status`). A day with 30
+departures would need 30 more.
+
+Batching by id is **not** available as a cheaper route: `/fixtures?ids=` is
+plan-gated on the free tier — verified against the live API, which answers
+`{"plan":"Free plans do not have access to the Ids parameter."}` — and
+`fetchFixtureById` is `?id=` singular, one request per fixture. A paid tier
+unlocks `ids` (20 per request), at which point backfilling events for a sweep's
+departures costs one or two requests and this becomes cheap to fix.
+
+Until then the inconsistency is deliberate and bounded: it only affects matches
+that ended between two polls, and only their event list.

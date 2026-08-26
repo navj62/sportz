@@ -9,7 +9,7 @@ import { createApp } from '../src/app.js';
 import { db, pool } from '../src/db/db.js';
 import { matches, events, competitions } from '../src/db/schema.js';
 import { errorHandler } from '../src/middleware/errorHandler.js';
-import { markStaleLiveMatchesFinished, upsertMatches } from '../src/services/matchService.js';
+import { applyConfirmedFinals, markStaleLiveMatchesFinished, upsertMatches } from '../src/services/matchService.js';
 import { replaceMatchEvents } from '../src/services/eventService.js';
 import { mapFixtureToEvents } from '../src/services/apiFootball.js';
 import { upsertCompetitions } from '../src/services/competitionService.js';
@@ -184,6 +184,107 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
             const [b] = await db.select().from(matches).where(eq(matches.id, postponed.id));
             expect(a.status).toBe('scheduled');
             expect(b.status).toBe('postponed');
+        });
+    });
+
+    // ── Reconciliation tier 2: applying confirmed outcomes ───────────────────
+    //
+    // Against real Postgres because every property here is a property of the
+    // statement — the status guard, the untouched FK, the absence of an insert.
+    // A mocked db would assert only that the function was called.
+    describe('applyConfirmedFinals', () => {
+        const final = (externalId, overrides = {}) => ({
+            externalId,
+            status: 'finished',
+            homeScore: 3,
+            awayScore: 1,
+            endTime: new Date('2026-08-26T12:00:00Z'),
+            ...overrides,
+        });
+
+        it('writes the confirmed status, score and end_time', async () => {
+            // Score deliberately unlike the seeded one: the point of tier 2 is
+            // that the row was carrying a last-polled score, not a final.
+            const match = await seedMatch({
+                externalId: 'fx-1',
+                status: 'live',
+                homeScore: 1,
+                awayScore: 1,
+            });
+
+            const updated = await applyConfirmedFinals([final('fx-1')]);
+
+            expect(updated.map((row) => row.id)).toEqual([match.id]);
+            const [after] = await db.select().from(matches).where(eq(matches.id, match.id));
+            expect(after.status).toBe('finished');
+            expect(after.homeScore).toBe(3);
+            expect(after.awayScore).toBe(1);
+            expect(after.endTime).toEqual(new Date('2026-08-26T12:00:00Z'));
+        });
+
+        it('leaves end_time NULL when the caller supplies none', async () => {
+            const match = await seedMatch({ externalId: 'fx-2', status: 'live' });
+
+            await applyConfirmedFinals([final('fx-2', { status: 'cancelled', endTime: null })]);
+
+            const [after] = await db.select().from(matches).where(eq(matches.id, match.id));
+            expect(after.status).toBe('cancelled');
+            expect(after.endTime).toBeNull();
+        });
+
+        it('does NOT clobber a row that is no longer live', async () => {
+            // Makes a late or duplicated sweep a no-op instead of a rewrite.
+            const match = await seedMatch({
+                externalId: 'fx-3',
+                status: 'finished',
+                homeScore: 2,
+                awayScore: 2,
+            });
+
+            const updated = await applyConfirmedFinals([final('fx-3')]);
+
+            expect(updated).toEqual([]);
+            const [after] = await db.select().from(matches).where(eq(matches.id, match.id));
+            expect(after.homeScore).toBe(2);
+            expect(after.awayScore).toBe(2);
+        });
+
+        it('does NOT insert a row for an unknown fixture', async () => {
+            // The reason this is not upsertMatches. That path inserts on miss,
+            // so a reconciliation pass could conjure matches into existence.
+            const before = await db.select().from(matches);
+
+            const updated = await applyConfirmedFinals([final('never-seen')]);
+
+            expect(updated).toEqual([]);
+            expect(await db.select().from(matches)).toHaveLength(before.length);
+        });
+
+        it('does NOT null the competition FK', async () => {
+            // The other reason this is not upsertMatches, whose conflict clause
+            // sets competitionId from excluded and would blank it here.
+            const competition = await seedCompetition();
+            const match = await seedMatch({
+                externalId: 'fx-4',
+                status: 'live',
+                competitionId: competition.id,
+            });
+
+            await applyConfirmedFinals([final('fx-4')]);
+
+            const [after] = await db.select().from(matches).where(eq(matches.id, match.id));
+            expect(after.competitionId).toBe(competition.id);
+        });
+
+        it('applies a batch and reports only the rows it actually changed', async () => {
+            const liveMatch = await seedMatch({ externalId: 'fx-5', status: 'live' });
+            await seedMatch({ externalId: 'fx-6', status: 'finished' });
+
+            const updated = await applyConfirmedFinals([final('fx-5'), final('fx-6')]);
+
+            expect(updated.map((row) => row.externalId)).toEqual(['fx-5']);
+            const [after] = await db.select().from(matches).where(eq(matches.id, liveMatch.id));
+            expect(after.status).toBe('finished');
         });
     });
 

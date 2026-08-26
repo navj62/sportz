@@ -14,6 +14,8 @@ const {
     upsertMatches,
     replaceMatchEvents,
     markStaleLiveMatchesFinished,
+    applyConfirmedFinals,
+    fetchFixturesByDate,
 } = vi.hoisted(() => ({
     acquireLock: vi.fn(),
     releaseLock: vi.fn(),
@@ -23,13 +25,17 @@ const {
     upsertMatches: vi.fn(),
     replaceMatchEvents: vi.fn(),
     markStaleLiveMatchesFinished: vi.fn(),
+    applyConfirmedFinals: vi.fn(),
+    fetchFixturesByDate: vi.fn(),
 }));
 
 vi.mock('../src/redis/client.js', () => ({ acquireLock, releaseLock }));
 
 vi.mock('../src/services/apiFootball.js', () => ({
     fetchLiveFixtures,
+    fetchFixturesByDate,
     fetchStatus,
+    mapStatus: (short) => (short === 'FT' ? 'finished' : short === 'CANC' ? 'cancelled' : 'live'),
     fetchStandings: vi.fn(),
     mapFixtureToCompetition: (fixture) => ({ externalId: String(fixture.league.id), name: 'L' }),
     mapFixtureToEvents: () => [],
@@ -37,7 +43,7 @@ vi.mock('../src/services/apiFootball.js', () => ({
     mapStandingRow: vi.fn(),
 }));
 
-vi.mock('../src/services/matchService.js', () => ({ upsertMatches, markStaleLiveMatchesFinished }));
+vi.mock('../src/services/matchService.js', () => ({ upsertMatches, markStaleLiveMatchesFinished, applyConfirmedFinals }));
 vi.mock('../src/services/eventService.js', () => ({ replaceMatchEvents }));
 vi.mock('../src/services/competitionService.js', () => ({
     upsertCompetitions,
@@ -45,10 +51,21 @@ vi.mock('../src/services/competitionService.js', () => ({
 }));
 vi.mock('../src/services/standingsService.js', () => ({ upsertStandings: vi.fn() }));
 
-const { __pollOnceForTests, startLiveSync, stopLiveSync } = await import('../src/services/liveSync.js');
+const { __pollOnceForTests, __resetReconcileStateForTests, startLiveSync, stopLiveSync } = await import('../src/services/liveSync.js');
 
 /** One live fixture, enough to drive the poll past its empty-payload early return. */
-const FIXTURE = { fixture: { id: 111 }, league: { id: 39 } };
+const FIXTURE = { fixture: { id: 111, date: '2026-08-26T09:00:00+00:00' }, league: { id: 39 } };
+
+/** A second live fixture, so a cycle can drop one and keep the other. */
+const FIXTURE_2 = { fixture: { id: 222, date: '2026-08-26T09:00:00+00:00' }, league: { id: 39 } };
+
+/** How the date sweep reports a departed fixture. */
+function finishedFixture(id, home, away) {
+    return {
+        fixture: { id, date: '2026-08-26T09:00:00+00:00', status: { short: 'FT' } },
+        goals: { home, away },
+    };
+}
 
 function lockGranted(token = 'tok-1') {
     return { acquired: true, reason: 'acquired', token };
@@ -63,6 +80,9 @@ beforeEach(() => {
     upsertMatches.mockResolvedValue([{ externalId: '111', id: 7 }]);
     replaceMatchEvents.mockResolvedValue(undefined);
     markStaleLiveMatchesFinished.mockResolvedValue([]);
+    applyConfirmedFinals.mockResolvedValue([]);
+    fetchFixturesByDate.mockResolvedValue({ fixtures: [], quota: { remainingDay: 10 } });
+    __resetReconcileStateForTests();
     acquireLock.mockResolvedValue(lockGranted());
     releaseLock.mockResolvedValue(undefined);
 });
@@ -254,5 +274,216 @@ describe('liveSync stale-live reconciliation (time floor)', () => {
         expect(count).toBe(1);
         expect(fetchLiveFixtures).toHaveBeenCalledTimes(1);
         expect(releaseLock).toHaveBeenCalledTimes(1);
+    });
+});
+
+/**
+ * Tier 2 of reconciliation. The properties under test are the ones whose
+ * failure mode is silent and catastrophic: an absence counted against a cycle
+ * that did not genuinely succeed, or a departure acted on before the threshold.
+ * Both assert on MECHANISM — whether a request was made and with what — rather
+ * than on a final row state, which the ordinary upsert path could also produce.
+ */
+describe('liveSync departure confirmation (date sweep)', () => {
+    const live = (...fixtures) =>
+        fetchLiveFixtures.mockResolvedValue({ fixtures, quota: { remainingDay: 10 } });
+
+    it('does NOT confirm after a single absence', async () => {
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();
+
+        live(FIXTURE); // 222 absent once — below the threshold of 2
+        await __pollOnceForTests();
+
+        expect(fetchFixturesByDate).not.toHaveBeenCalled();
+        expect(applyConfirmedFinals).not.toHaveBeenCalled();
+    });
+
+    it('confirms once the absence threshold is reached', async () => {
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();
+        live(FIXTURE);
+        await __pollOnceForTests();
+        await __pollOnceForTests(); // 222 absent twice
+
+        expect(fetchFixturesByDate).toHaveBeenCalledTimes(1);
+        expect(fetchFixturesByDate).toHaveBeenCalledWith('2026-08-26');
+    });
+
+    it('resets the counter when a match reappears', async () => {
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();
+        live(FIXTURE);
+        await __pollOnceForTests();          // 222 absent once
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();          // 222 back — consecutive run broken
+        live(FIXTURE);
+        await __pollOnceForTests();          // absent once again, not twice
+
+        expect(fetchFixturesByDate).not.toHaveBeenCalled();
+    });
+
+    it('does NOT count an absence against an EMPTY cycle', async () => {
+        // The catastrophic case, and the reason tier 2 sits after the
+        // empty-payload early return. An empty feed is indistinguishable from a
+        // broken one; if it counted, a single outage would age every live match
+        // to the threshold at once and mark the whole table finished.
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();
+
+        live(); // empty
+        await __pollOnceForTests();
+        await __pollOnceForTests();
+        await __pollOnceForTests();
+
+        expect(fetchFixturesByDate).not.toHaveBeenCalled();
+        expect(applyConfirmedFinals).not.toHaveBeenCalled();
+    });
+
+    it('does NOT count an absence against a FAILED cycle', async () => {
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();
+
+        fetchLiveFixtures.mockRejectedValue(new Error('API-Football error 500'));
+        await expect(__pollOnceForTests()).rejects.toThrow();
+        await expect(__pollOnceForTests()).rejects.toThrow();
+
+        expect(fetchFixturesByDate).not.toHaveBeenCalled();
+    });
+
+    it('makes ONE request for several departures sharing a date', async () => {
+        // The whole reason confirm is by date rather than by id: cost is per
+        // date, not per match.
+        const third = { fixture: { id: 333, date: '2026-08-26T09:00:00+00:00' }, league: { id: 39 } };
+        live(FIXTURE, FIXTURE_2, third);
+        await __pollOnceForTests();
+        live(FIXTURE);
+        await __pollOnceForTests();
+        await __pollOnceForTests(); // 222 AND 333 both departed
+
+        expect(fetchFixturesByDate).toHaveBeenCalledTimes(1);
+    });
+
+    it('writes the CONFIRMED final score, not the last-polled one', async () => {
+        fetchFixturesByDate.mockResolvedValue({
+            fixtures: [finishedFixture(222, 3, 1)],
+            quota: { remainingDay: 10 },
+        });
+
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();
+        live(FIXTURE);
+        await __pollOnceForTests();
+        await __pollOnceForTests();
+
+        expect(applyConfirmedFinals).toHaveBeenCalledTimes(1);
+        const [rows] = applyConfirmedFinals.mock.calls[0];
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+            externalId: '222',
+            status: 'finished',
+            homeScore: 3,
+            awayScore: 1,
+        });
+        // A confirmed finish is the only path that may claim an end time.
+        expect(rows[0].endTime).toBeInstanceOf(Date);
+    });
+
+    it('writes no end_time for a non-finish outcome', async () => {
+        fetchFixturesByDate.mockResolvedValue({
+            fixtures: [{ fixture: { id: 222, status: { short: 'CANC' } }, goals: { home: 0, away: 0 } }],
+            quota: { remainingDay: 10 },
+        });
+
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();
+        live(FIXTURE);
+        await __pollOnceForTests();
+        await __pollOnceForTests();
+
+        const [rows] = applyConfirmedFinals.mock.calls[0];
+        expect(rows[0]).toMatchObject({ externalId: '222', status: 'cancelled' });
+        expect(rows[0].endTime).toBeNull();
+    });
+
+    it('writes nothing when the confirm says the match is STILL LIVE', async () => {
+        // A transient feed dropout, not a departure. Absence proposed it; the
+        // explicit marker overrules it.
+        fetchFixturesByDate.mockResolvedValue({
+            fixtures: [{ fixture: { id: 222, status: { short: '2H' } }, goals: { home: 1, away: 0 } }],
+            quota: { remainingDay: 10 },
+        });
+
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();
+        live(FIXTURE);
+        await __pollOnceForTests();
+        await __pollOnceForTests();
+
+        expect(fetchFixturesByDate).toHaveBeenCalledTimes(1);
+        expect(applyConfirmedFinals).not.toHaveBeenCalled();
+    });
+
+    it('honours the cooldown — a second sweep in the same hour costs no request', async () => {
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();
+        live(FIXTURE);
+        await __pollOnceForTests();
+        await __pollOnceForTests(); // sweep 1
+        await __pollOnceForTests(); // would be sweep 2, inside the cooldown
+
+        expect(fetchFixturesByDate).toHaveBeenCalledTimes(1);
+    });
+
+    it('spends NO request when there are no departures', async () => {
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();
+        await __pollOnceForTests();
+        await __pollOnceForTests();
+
+        expect(fetchFixturesByDate).not.toHaveBeenCalled();
+    });
+
+    it('is disabled by exactly the string "false"', async () => {
+        process.env.RECONCILE_CONFIRM_ENABLED = 'false';
+        try {
+            live(FIXTURE, FIXTURE_2);
+            await __pollOnceForTests();
+            live(FIXTURE);
+            await __pollOnceForTests();
+            await __pollOnceForTests();
+
+            expect(fetchFixturesByDate).not.toHaveBeenCalled();
+        } finally {
+            delete process.env.RECONCILE_CONFIRM_ENABLED;
+        }
+    });
+
+    it('stays enabled when the flag is unset or any other value', async () => {
+        process.env.RECONCILE_CONFIRM_ENABLED = 'yes';
+        try {
+            live(FIXTURE, FIXTURE_2);
+            await __pollOnceForTests();
+            live(FIXTURE);
+            await __pollOnceForTests();
+            await __pollOnceForTests();
+
+            expect(fetchFixturesByDate).toHaveBeenCalledTimes(1);
+        } finally {
+            delete process.env.RECONCILE_CONFIRM_ENABLED;
+        }
+    });
+
+    it('a failing confirm does not break the poll', async () => {
+        fetchFixturesByDate.mockRejectedValue(new Error('API-Football error 500'));
+
+        live(FIXTURE, FIXTURE_2);
+        await __pollOnceForTests();
+        live(FIXTURE);
+        await __pollOnceForTests();
+        const count = await __pollOnceForTests();
+
+        expect(count).toBe(1);
+        expect(releaseLock).toHaveBeenCalledTimes(3);
     });
 });

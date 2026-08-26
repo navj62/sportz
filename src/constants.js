@@ -6,9 +6,22 @@ export const API_FOOTBALL_RETRY_BASE_MS = 1_000;
 
 // Sized against the API-Football free tier: 100 requests/day. One request per
 // live cycle (fixtures, leagues and events all arrive in the /fixtures?live=all
-// payload) means 15 min => ~96 requests/day. The idle interval must stay LONGER
-// than the live one, or idling would cost more quota than being live.
-export const DEFAULT_LIVE_SYNC_INTERVAL_MS = 900_000;
+// payload). The idle interval must stay LONGER than the live one, or idling
+// would cost more quota than being live.
+//
+// 20 min => 72/day, leaving room for reconciliation tier 2 (the date-sweep
+// confirm below). The full budget:
+//
+//     72  live poll at 20 min, awake all day
+//   + 24  tier 2, worst case: one sweep per hour, every hour
+//   +  1  the boot /status request
+//   ────
+//     97  of 100
+//
+// The 24 is a CEILING, not an expectation — a sweep only fires when departures
+// are actually pending, so quiet hours cost nothing. At the previous 15 min
+// (96/day) that budget came to 121 and did not fit, which is why this moved.
+export const DEFAULT_LIVE_SYNC_INTERVAL_MS = 1_200_000;
 export const DEFAULT_LIVE_SYNC_IDLE_INTERVAL_MS = 1_800_000;
 export const DEFAULT_STANDINGS_SYNC_INTERVAL_MS = 3_600_000;
 
@@ -50,3 +63,45 @@ export const MAX_SUBSCRIPTIONS_PER_SOCKET = 20;
 // Costs ZERO API requests, which is why it runs on every cycle including empty
 // and failed ones — it never consults the feed.
 export const RECONCILE_STALE_LIVE_CUTOFF_HOURS = 6;
+
+// ── Reconciliation tier 2: the date-sweep confirm ────────────────────────────
+//
+// Tier 1 (the floor above) stops phantom live matches. Tier 2 is what recovers
+// the correct FINAL SCORE, which inference structurally cannot: a match that
+// leaves the feed carries whatever score was last polled, possibly from the
+// 60th minute. Only an explicit upstream marker fixes that.
+//
+// Confirm is by DATE, not by id. /fixtures?ids= is plan-gated on the free tier
+// ("Free plans do not have access to the Ids parameter"), and fetchFixtureById
+// is ?id= singular — one request per departure, which does not fit the budget.
+// One /fixtures?date= request resolves EVERY departure for that date whatever
+// their number, so the cost is per-date rather than per-match.
+
+// Ships ENABLED. Opt-OUT rather than opt-in — unlike STANDINGS_SYNC_ENABLED,
+// which is off because the free tier cannot serve it at all — so only the exact
+// string 'false' disables it. Anything else, including unset, leaves it on.
+export const RECONCILE_CONFIRM_DISABLE_VALUE = 'false';
+
+// N consecutive absences across SUCCESSFUL, NON-EMPTY cycles before a match is
+// eligible for confirm.
+//
+// N is a COST knob, not a safety knob, and that distinction is the whole
+// design: absence never writes anything. Only a confirmed upstream status or
+// the tier 1 floor changes a row, so no value of N — not even 1 — can flip a
+// match on a bad cycle. N therefore only decides how eagerly we spend a
+// request. 2 absorbs a single partial payload for at most one extra interval
+// (~20 min); 3 would add another 20 min of staleness and buy nothing, since the
+// thing it would guard against is already structurally impossible.
+export const RECONCILE_ABSENCE_THRESHOLD = 2;
+
+// At most one sweep per hour, however many departures accumulate. Costs nothing
+// in coverage — one sweep resolves every pending departure for a date at once —
+// so the cooldown only delays the flip, and tier 1 backstops it regardless.
+export const RECONCILE_CONFIRM_COOLDOWN_MS = 3_600_000;
+
+// Hard ceiling on requests per sweep. Departures group by the UTC date of their
+// kickoff, and a match starting 22:00Z finishes on the following UTC date, so
+// two dates is the realistic maximum. This bounds the cost even if the map ends
+// up holding something older; whatever is not swept falls to the tier 1 floor,
+// which needs no requests at all.
+export const RECONCILE_MAX_CONFIRM_DATES = 2;

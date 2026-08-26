@@ -118,3 +118,59 @@ export async function markStaleLiveMatchesFinished(cutoffHours) {
         )
         .returning({ id: matches.id, externalId: matches.externalId });
 }
+
+/**
+ * Reconciliation tier 2 — applies CONFIRMED outcomes read back from the API.
+ *
+ * Deliberately NOT upsertMatches. That path is wrong here in two ways: its
+ * conflict clause sets `competitionId: excluded.competition_id`, so a row
+ * without a freshly resolved competition would have its FK nulled, and it
+ * INSERTS on miss, so a fixture we do not track would be conjured into
+ * existence by a reconciliation pass. This only ever updates rows that already
+ * exist.
+ *
+ * Every update is additionally guarded on `status = 'live'`. Reconciliation's
+ * job is unsticking matches we believe are still in play; a row that already
+ * moved on is not ours to rewrite, and the guard makes a late or duplicated
+ * sweep a no-op rather than a clobber.
+ *
+ * `endTime` is written ONLY when the caller supplies one, which it does only
+ * for a confirmed 'finished'. It records WHEN WE CONFIRMED the finish, not the
+ * final whistle — the upstream payload carries kickoff, not end. The two differ
+ * by at most one cooldown. That is the honest reading of the column, and it is
+ * still worth having: non-null means "we observed this match finish", which is
+ * exactly what the tier 1 floor cannot claim and therefore leaves NULL.
+ *
+ * One transaction, so a mid-sweep failure leaves no half-applied batch.
+ *
+ * @param {Array<{ externalId: string, status: string, homeScore: number, awayScore: number, endTime: Date|null }>} rows
+ * @returns {Promise<Array<{ id: number, externalId: string|null, status: string }>>}
+ */
+export async function applyConfirmedFinals(rows) {
+    if (rows.length === 0) return [];
+
+    return db.transaction(async (tx) => {
+        const updated = [];
+
+        for (const row of rows) {
+            const [match] = await tx
+                .update(matches)
+                .set({
+                    status: row.status,
+                    homeScore: row.homeScore,
+                    awayScore: row.awayScore,
+                    ...(row.endTime ? { endTime: row.endTime } : {}),
+                })
+                .where(and(eq(matches.externalId, row.externalId), eq(matches.status, 'live')))
+                .returning({
+                    id: matches.id,
+                    externalId: matches.externalId,
+                    status: matches.status,
+                });
+
+            if (match) updated.push(match);
+        }
+
+        return updated;
+    });
+}

@@ -1,13 +1,15 @@
 import {
+    fetchFixturesByDate,
     fetchLiveFixtures,
     fetchStandings,
     fetchStatus,
+    mapStatus,
     mapFixtureToCompetition,
     mapFixtureToEvents,
     mapFixtureToMatch,
     mapStandingRow,
 } from './apiFootball.js';
-import { markStaleLiveMatchesFinished, upsertMatches } from './matchService.js';
+import { applyConfirmedFinals, markStaleLiveMatchesFinished, upsertMatches } from './matchService.js';
 import { replaceMatchEvents } from './eventService.js';
 import { listCompetitions, upsertCompetitions } from './competitionService.js';
 import { upsertStandings } from './standingsService.js';
@@ -20,6 +22,10 @@ import {
     LIVE_SYNC_LOCK_KEY,
     LIVE_SYNC_LOCK_TTL_SECONDS,
     MAX_LIMIT,
+    RECONCILE_ABSENCE_THRESHOLD,
+    RECONCILE_CONFIRM_COOLDOWN_MS,
+    RECONCILE_CONFIRM_DISABLE_VALUE,
+    RECONCILE_MAX_CONFIRM_DATES,
     RECONCILE_STALE_LIVE_CUTOFF_HOURS,
 } from '../constants.js';
 
@@ -27,6 +33,26 @@ let broadcastFn = null;
 let liveTimer = null;
 let standingsTimer = null;
 let stopped = true;
+
+/**
+ * Reconciliation tier 2 state: every fixture this process has seen live, and
+ * how many consecutive SUCCESSFUL, NON-EMPTY cycles it has been missing from
+ * since.
+ *
+ * In memory, and no migration, because absence is NON-WRITING. The counter
+ * never decides that a match finished — it only decides when it is worth
+ * spending a request to ask. So losing it to a restart (Render's free tier
+ * hibernates, and the instance hostname says so) delays a confirm by one
+ * cooldown and can never cause a wrong write. A rebuilt-from-empty map simply
+ * has no departures yet, which is the fail-safe direction. Persisting it would
+ * be paying migration cost for a value whose loss is harmless.
+ *
+ * @type {Map<string, { absences: number, startTime: string|null }>}
+ */
+const liveSeen = new Map();
+
+/** Epoch ms of the last confirm sweep, enforcing RECONCILE_CONFIRM_COOLDOWN_MS. */
+let lastConfirmAtMs = 0;
 
 /** Read here rather than at module load, so importing this file is side-effect free. */
 function readConfig() {
@@ -83,6 +109,16 @@ export function startLiveSync({ broadcast }) {
  */
 export function __pollOnceForTests() {
     return pollLiveFixtures();
+}
+
+/**
+ * Test seam. Clears tier 2's absence map and cooldown so one test's departures
+ * cannot leak into the next. Named per the __…ForTests convention so it is
+ * obviously not production API.
+ */
+export function __resetReconcileStateForTests() {
+    liveSeen.clear();
+    lastConfirmAtMs = 0;
 }
 
 export function stopLiveSync() {
@@ -220,6 +256,159 @@ async function reconcileStaleLiveMatches() {
     }
 }
 
+/**
+ * Ships enabled: only the exact string 'false' turns tier 2 off. Read lazily
+ * inside the function, never at module load, so importing this file stays
+ * side-effect free.
+ */
+function isConfirmEnabled() {
+    return process.env.RECONCILE_CONFIRM_ENABLED !== RECONCILE_CONFIRM_DISABLE_VALUE;
+}
+
+/**
+ * Updates the absence map against one cycle's fixtures and returns the matches
+ * that have now been missing for RECONCILE_ABSENCE_THRESHOLD cycles.
+ *
+ * MUST only ever be called with the fixtures of a cycle that genuinely
+ * succeeded AND returned a non-empty payload. An empty feed is indistinguishable
+ * from a broken one, so counting an absence against it would let a single API
+ * outage age every live match to the threshold at once. Its caller sits after
+ * syncLiveFixtures' empty-payload early return for exactly that reason.
+ *
+ * @param {Array<{ fixture: { id: number, date?: string } }>} fixtures
+ * @returns {Array<{ externalId: string, startTime: string|null }>}
+ */
+function trackAbsences(fixtures) {
+    const seen = new Set();
+
+    for (const fixture of fixtures) {
+        const externalId = String(fixture.fixture.id);
+        seen.add(externalId);
+        // Present again resets the counter outright rather than decrementing:
+        // the threshold counts CONSECUTIVE absences, and a match that reappears
+        // was never a departure.
+        liveSeen.set(externalId, { absences: 0, startTime: fixture.fixture.date ?? null });
+    }
+
+    const departures = [];
+    for (const [externalId, entry] of liveSeen) {
+        if (seen.has(externalId)) continue;
+
+        entry.absences += 1;
+        if (entry.absences >= RECONCILE_ABSENCE_THRESHOLD) {
+            departures.push({ externalId, startTime: entry.startTime });
+        }
+    }
+
+    return departures;
+}
+
+/** @param {string|null} iso @returns {string|null} YYYY-MM-DD in UTC, or null if unusable */
+function utcDateOf(iso) {
+    if (!iso) return null;
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Reconciliation tier 2 — confirm departures against the API and write their
+ * real final scores.
+ *
+ * This is the half that inference cannot do. A match that left the feed carries
+ * whatever score was last polled, possibly from the 60th minute; only reading
+ * the outcome back fixes it. Absence gets us as far as "worth asking about" and
+ * no further — the write is driven entirely by the status the API reports.
+ *
+ * KNOWN TRADEOFF, accepted and tracked in FOLLOWUPS: /fixtures?date= does NOT
+ * embed events, unlike /fixtures?live=all. So a goal scored after the last live
+ * poll lands in the corrected SCORE but is missing from the event list — a match
+ * can read 2-1 with one goal event. Same class as the backfill's stale-score
+ * caveat. Closing it needs one /fixtures/events request per match, which does
+ * not fit the free tier's budget.
+ *
+ * Swallows its own failure: reconciliation is a step inside the poll, not a
+ * precondition for it.
+ */
+async function confirmDepartures(departures) {
+    if (departures.length === 0) return;
+    if (!isConfirmEnabled()) return;
+
+    const now = Date.now();
+    if (now - lastConfirmAtMs < RECONCILE_CONFIRM_COOLDOWN_MS) return;
+    // Stamped BEFORE the requests, not after. On failure this still holds the
+    // cooldown, so a persistently failing sweep costs one request an hour rather
+    // than one every cycle.
+    lastConfirmAtMs = now;
+
+    // Group by the UTC date of kickoff: one request serves every departure that
+    // shares a date, however many there are. A match starting 22:00Z finishes on
+    // the next UTC date, so two dates is the realistic maximum.
+    const byDate = new Map();
+    for (const departure of departures) {
+        const date = utcDateOf(departure.startTime);
+        if (date === null) continue;
+        if (!byDate.has(date)) byDate.set(date, new Set());
+        byDate.get(date).add(departure.externalId);
+    }
+
+    // Newest dates first if we are ever over the cap; anything dropped is left
+    // to the tier 1 floor, which costs nothing.
+    const dates = [...byDate.keys()].sort().slice(-RECONCILE_MAX_CONFIRM_DATES);
+
+    const finals = [];
+    let requests = 0;
+    let stillLive = 0;
+
+    for (const date of dates) {
+        const { fixtures } = await fetchFixturesByDate(date);
+        requests += 1;
+
+        const wanted = byDate.get(date);
+        for (const fixture of fixtures) {
+            const externalId = String(fixture.fixture.id);
+            if (!wanted.has(externalId)) continue;
+
+            const status = mapStatus(fixture.fixture.status.short);
+
+            if (status === 'live') {
+                // A false departure — the feed dropped it transiently but the
+                // match is still going. Reset rather than write anything.
+                const entry = liveSeen.get(externalId);
+                if (entry) entry.absences = 0;
+                stillLive += 1;
+                continue;
+            }
+
+            finals.push({
+                externalId,
+                status,
+                homeScore: fixture.goals?.home ?? 0,
+                awayScore: fixture.goals?.away ?? 0,
+                // Only a finish is an observed finish. A cancelled or postponed
+                // match never ended, so it gets no end_time.
+                endTime: status === 'finished' ? new Date() : null,
+            });
+            liveSeen.delete(externalId);
+        }
+    }
+
+    const updated = finals.length > 0 ? await applyConfirmedFinals(finals) : [];
+
+    logger.info(
+        {
+            endpoint: '/fixtures?date=',
+            departures: departures.length,
+            dates,
+            requests,
+            confirmed: finals.length,
+            updated: updated.length,
+            stillLive,
+        },
+        'reconciled departed matches against confirmed status (date sweep)',
+    );
+}
+
 /** @returns {Promise<number>} live fixtures seen this cycle */
 async function syncLiveFixtures() {
     const startedAt = Date.now();
@@ -266,6 +455,17 @@ async function syncLiveFixtures() {
     }
 
     broadcastFn?.({ type: 'live_scores', data: matchRows });
+
+    // Tier 2 runs HERE and nowhere else. Everything above it — the non-empty
+    // early return, the successful fetch, the completed upserts — is what makes
+    // this cycle's fixture list trustworthy enough to count an absence against.
+    // Move this above that early return and one empty payload from a broken API
+    // starts ageing every live match toward the threshold at once.
+    try {
+        await confirmDepartures(trackAbsences(fixtures));
+    } catch (err) {
+        logger.error({ err }, 'departure confirmation failed');
+    }
 
     logger.info(
         {
