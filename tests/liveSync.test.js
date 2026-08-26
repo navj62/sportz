@@ -323,6 +323,36 @@ describe('liveSync departure confirmation (date sweep)', () => {
         expect(fetchFixturesByDate).not.toHaveBeenCalled();
     });
 
+    it('resets the counter to ZERO on reappearance, rather than decrementing it', async () => {
+        // Distinguishes reset from decrement, which a single absent-then-back
+        // cycle cannot: both leave the counter at 0 there. Only a match that
+        // accumulated SEVERAL absences before returning tells them apart —
+        // decrementing would leave it at or above the threshold and keep it in
+        // the departure list forever, re-confirming a match that is plainly
+        // live every time the cooldown lapses.
+        //
+        // Confirm is disabled while the absences accumulate so the sweep
+        // neither resolves the entry nor starts the cooldown, which would mask
+        // the difference.
+        process.env.RECONCILE_CONFIRM_ENABLED = 'false';
+        try {
+            live(FIXTURE, FIXTURE_2);
+            await __pollOnceForTests();
+            live(FIXTURE);
+            await __pollOnceForTests();      // 222 absent once
+            await __pollOnceForTests();      // 222 absent twice — at the threshold
+            live(FIXTURE, FIXTURE_2);
+            await __pollOnceForTests();      // 222 back: reset -> 0, decrement -> 1
+        } finally {
+            delete process.env.RECONCILE_CONFIRM_ENABLED;
+        }
+
+        live(FIXTURE);
+        await __pollOnceForTests();          // reset -> 1 (below), decrement -> 2 (at)
+
+        expect(fetchFixturesByDate).not.toHaveBeenCalled();
+    });
+
     it('does NOT count an absence against an EMPTY cycle', async () => {
         // The catastrophic case, and the reason tier 2 sits after the
         // empty-payload early return. An empty feed is indistinguishable from a
