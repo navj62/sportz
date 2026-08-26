@@ -39,3 +39,14 @@ export const LIVE_SYNC_LOCK_TTL_SECONDS = 60;
 // (an empty set means every match). A cap set near the real usage would fail
 // users while looking like a bug, so this leaves an order of magnitude of room.
 export const MAX_SUBSCRIPTIONS_PER_SOCKET = 20;
+
+// Reconciliation tier 1, the time floor. A match still marked 'live' whose
+// SCHEDULED kickoff is older than this cannot actually be live. Same value and
+// same reasoning as scripts/backfill-stuck-live-matches.js: regulation ~2h,
+// extra time plus penalties ~3h15m, SUSP/INT legitimately hold a match live for
+// hours, and start_time is scheduled rather than actual kickoff. ~4h is the
+// honest floor; 6h carries margin.
+//
+// Costs ZERO API requests, which is why it runs on every cycle including empty
+// and failed ones — it never consults the feed.
+export const RECONCILE_STALE_LIVE_CUTOFF_HOURS = 6;

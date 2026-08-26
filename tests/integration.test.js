@@ -9,7 +9,7 @@ import { createApp } from '../src/app.js';
 import { db, pool } from '../src/db/db.js';
 import { matches, events, competitions } from '../src/db/schema.js';
 import { errorHandler } from '../src/middleware/errorHandler.js';
-import { upsertMatches } from '../src/services/matchService.js';
+import { markStaleLiveMatchesFinished, upsertMatches } from '../src/services/matchService.js';
 import { replaceMatchEvents } from '../src/services/eventService.js';
 import { mapFixtureToEvents } from '../src/services/apiFootball.js';
 import { upsertCompetitions } from '../src/services/competitionService.js';
@@ -118,6 +118,73 @@ describe.skipIf(skip)('Sportz API — Integration', () => {
 
         await migrate(db, { migrationsFolder });
         app = createApp();
+    });
+
+    // ── Reconciliation tier 1: the time floor ────────────────────────────────
+    //
+    // Exercised against real Postgres because the whole guard is one SQL
+    // predicate — `now() - make_interval(hours => $1)` on the DATABASE clock.
+    // A mocked matchService proves the caller passes 6; only this proves the
+    // cutoff actually selects the right rows.
+    describe('markStaleLiveMatchesFinished', () => {
+        const hoursAgo = (h) => new Date(Date.now() - h * 3_600_000);
+
+        it('flips a live match older than the cutoff', async () => {
+            const match = await seedMatch({ status: 'live', startTime: hoursAgo(7) });
+
+            const flipped = await markStaleLiveMatchesFinished(6);
+
+            expect(flipped.map((row) => row.id)).toEqual([match.id]);
+            const [after] = await db.select().from(matches).where(eq(matches.id, match.id));
+            expect(after.status).toBe('finished');
+        });
+
+        it('leaves a live match INSIDE the cutoff alone', async () => {
+            // A real match in extra time. The floor must not reach it.
+            const match = await seedMatch({ status: 'live', startTime: hoursAgo(3) });
+
+            const flipped = await markStaleLiveMatchesFinished(6);
+
+            expect(flipped).toEqual([]);
+            const [after] = await db.select().from(matches).where(eq(matches.id, match.id));
+            expect(after.status).toBe('live');
+        });
+
+        it('only touches status — score and end_time are left as they are', async () => {
+            // The floor never learned the true final score or the end time, so
+            // it must not invent either. A non-null end_time has to keep meaning
+            // "we observed this finish".
+            const match = await seedMatch({
+                status: 'live',
+                startTime: hoursAgo(9),
+                homeScore: 2,
+                awayScore: 1,
+            });
+
+            await markStaleLiveMatchesFinished(6);
+
+            const [after] = await db.select().from(matches).where(eq(matches.id, match.id));
+            expect(after.status).toBe('finished');
+            expect(after.homeScore).toBe(2);
+            expect(after.awayScore).toBe(1);
+            expect(after.endTime).toBeNull();
+        });
+
+        it('does not touch non-live rows, however old', async () => {
+            // Notably the stale 'scheduled' seed rows, whose 0-0 is the column
+            // DEFAULT rather than an observation — flipping those would publish
+            // a fabricated final score. Same exclusion the backfill makes.
+            const scheduled = await seedMatch({ status: 'scheduled', startTime: hoursAgo(400) });
+            const postponed = await seedMatch({ status: 'postponed', startTime: hoursAgo(400) });
+
+            const flipped = await markStaleLiveMatchesFinished(6);
+
+            expect(flipped).toEqual([]);
+            const [a] = await db.select().from(matches).where(eq(matches.id, scheduled.id));
+            const [b] = await db.select().from(matches).where(eq(matches.id, postponed.id));
+            expect(a.status).toBe('scheduled');
+            expect(b.status).toBe('postponed');
+        });
     });
 
     afterEach(async () => {

@@ -7,7 +7,7 @@ import {
     mapFixtureToMatch,
     mapStandingRow,
 } from './apiFootball.js';
-import { upsertMatches } from './matchService.js';
+import { markStaleLiveMatchesFinished, upsertMatches } from './matchService.js';
 import { replaceMatchEvents } from './eventService.js';
 import { listCompetitions, upsertCompetitions } from './competitionService.js';
 import { upsertStandings } from './standingsService.js';
@@ -20,6 +20,7 @@ import {
     LIVE_SYNC_LOCK_KEY,
     LIVE_SYNC_LOCK_TTL_SECONDS,
     MAX_LIMIT,
+    RECONCILE_STALE_LIVE_CUTOFF_HOURS,
 } from '../constants.js';
 
 let broadcastFn = null;
@@ -177,11 +178,45 @@ async function pollLiveFixtures() {
     }
 
     try {
+        // Tier 1 runs BEFORE the fetch, and unconditionally. It is time-based,
+        // not feed-based, so it stays correct when the fetch below throws or
+        // comes back empty — the two cases where reading absence as "finished"
+        // would be catastrophic. Placing it here also puts it inside the lock,
+        // so on a multi-instance deploy only one process runs the UPDATE.
+        await reconcileStaleLiveMatches();
+
         return await syncLiveFixtures();
     } finally {
         // Null token on the 'disabled' and 'error' paths, where releaseLock is a
         // no-op — we never took a lock to give back.
         await releaseLock(LIVE_SYNC_LOCK_KEY, lock.token);
+    }
+}
+
+/**
+ * Reconciliation tier 1 — the time floor. Costs no API requests, so it runs on
+ * every cycle rather than being gated on the cycle succeeding.
+ *
+ * Swallows its own failure by design: reconciliation is a step inside the poll,
+ * not a precondition for it. A reconciliation that cannot run must never cost us
+ * the live scores, which are the actual product.
+ */
+async function reconcileStaleLiveMatches() {
+    try {
+        const flipped = await markStaleLiveMatchesFinished(RECONCILE_STALE_LIVE_CUTOFF_HOURS);
+
+        if (flipped.length > 0) {
+            logger.info(
+                {
+                    matches: flipped.length,
+                    cutoffHours: RECONCILE_STALE_LIVE_CUTOFF_HOURS,
+                    externalIds: flipped.map((row) => row.externalId),
+                },
+                'reconciled stale live matches to finished (time floor)',
+            );
+        }
+    } catch (err) {
+        logger.error({ err }, 'stale-live reconciliation failed');
     }
 }
 

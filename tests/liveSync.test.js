@@ -13,6 +13,7 @@ const {
     upsertCompetitions,
     upsertMatches,
     replaceMatchEvents,
+    markStaleLiveMatchesFinished,
 } = vi.hoisted(() => ({
     acquireLock: vi.fn(),
     releaseLock: vi.fn(),
@@ -21,6 +22,7 @@ const {
     upsertCompetitions: vi.fn(),
     upsertMatches: vi.fn(),
     replaceMatchEvents: vi.fn(),
+    markStaleLiveMatchesFinished: vi.fn(),
 }));
 
 vi.mock('../src/redis/client.js', () => ({ acquireLock, releaseLock }));
@@ -35,7 +37,7 @@ vi.mock('../src/services/apiFootball.js', () => ({
     mapStandingRow: vi.fn(),
 }));
 
-vi.mock('../src/services/matchService.js', () => ({ upsertMatches }));
+vi.mock('../src/services/matchService.js', () => ({ upsertMatches, markStaleLiveMatchesFinished }));
 vi.mock('../src/services/eventService.js', () => ({ replaceMatchEvents }));
 vi.mock('../src/services/competitionService.js', () => ({
     upsertCompetitions,
@@ -60,6 +62,7 @@ beforeEach(() => {
     upsertCompetitions.mockResolvedValue([{ externalId: '39', id: 1 }]);
     upsertMatches.mockResolvedValue([{ externalId: '111', id: 7 }]);
     replaceMatchEvents.mockResolvedValue(undefined);
+    markStaleLiveMatchesFinished.mockResolvedValue([]);
     acquireLock.mockResolvedValue(lockGranted());
     releaseLock.mockResolvedValue(undefined);
 });
@@ -195,5 +198,61 @@ describe('liveSync rescheduling after a lock skip', () => {
             expect(delays).toContain(900_000);
             expect(delays).not.toContain(1_800_000);
         });
+    });
+});
+
+/**
+ * Tier 1 of reconciliation. These assert the MECHANISM, not just the outcome —
+ * "the row ended up finished" could be produced by the ordinary upsert path
+ * observing an FT status, which would hide a deleted floor entirely.
+ */
+describe('liveSync stale-live reconciliation (time floor)', () => {
+    it('runs the floor with the 6h cutoff on a normal cycle', async () => {
+        await __pollOnceForTests();
+
+        expect(markStaleLiveMatchesFinished).toHaveBeenCalledTimes(1);
+        expect(markStaleLiveMatchesFinished).toHaveBeenCalledWith(6);
+    });
+
+    it('still runs the floor when the feed comes back EMPTY', async () => {
+        // The catastrophic case. An empty feed is indistinguishable from a
+        // broken one, so nothing may infer "finished" from absence — but the
+        // floor never consults the feed, so it must still run.
+        fetchLiveFixtures.mockResolvedValue({ fixtures: [], quota: { remainingDay: 10 } });
+
+        const count = await __pollOnceForTests();
+
+        expect(count).toBe(0);
+        expect(upsertMatches).not.toHaveBeenCalled();
+        expect(markStaleLiveMatchesFinished).toHaveBeenCalledTimes(1);
+    });
+
+    it('still runs the floor when the feed FAILS', async () => {
+        fetchLiveFixtures.mockRejectedValue(new Error('API-Football error 500'));
+
+        await expect(__pollOnceForTests()).rejects.toThrow('API-Football error 500');
+
+        // Ordered before the fetch precisely so a broken feed cannot suppress it.
+        expect(markStaleLiveMatchesFinished).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT run the floor when another instance holds the poll lock', async () => {
+        acquireLock.mockResolvedValue({ acquired: false, reason: 'held', token: null });
+
+        await __pollOnceForTests();
+
+        expect(markStaleLiveMatchesFinished).not.toHaveBeenCalled();
+    });
+
+    it('a failing floor does not break the poll', async () => {
+        // Graceful degradation: reconciliation is a step inside the poll, not a
+        // precondition for it.
+        markStaleLiveMatchesFinished.mockRejectedValue(new Error('db down'));
+
+        const count = await __pollOnceForTests();
+
+        expect(count).toBe(1);
+        expect(fetchLiveFixtures).toHaveBeenCalledTimes(1);
+        expect(releaseLock).toHaveBeenCalledTimes(1);
     });
 });

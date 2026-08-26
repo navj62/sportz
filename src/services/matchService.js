@@ -74,3 +74,47 @@ export async function upsertMatches(rows) {
         })
         .returning();
 }
+
+/**
+ * Reconciliation tier 1 — the TIME FLOOR. Marks any row still at 'live' whose
+ * scheduled kickoff is older than `cutoffHours` as 'finished'.
+ *
+ * This deliberately does NOT consult the live feed. It is the one reconciliation
+ * signal that stays valid on a failed or empty cycle: a suspended API produces
+ * an empty feed, but it does not make a 7-hour-old match still live. Absence
+ * from the feed and age are independent concerns, and only the second one is
+ * safe to act on unconditionally. (Tier 2, the date-sweep confirm in liveSync,
+ * is the one that must be gated on a genuinely successful cycle.)
+ *
+ * The 6h cutoff is a claim, not a convenience — it is the same claim
+ * scripts/backfill-stuck-live-matches.js makes, and for the same reasons:
+ * regulation is ~2h with stoppage and half-time, extra time plus penalties
+ * reaches ~3h15m, SUSP and INT are in LIVE_STATUSES so a suspended match
+ * legitimately stays live for hours, and start_time is SCHEDULED kickoff, not
+ * actual, so a delayed start is not reflected in the column. ~4h is the honest
+ * floor; 6h carries margin.
+ *
+ * `now()` is the DATABASE clock, matching the backfill, so a skewed app clock
+ * cannot widen or narrow the cutoff.
+ *
+ * Writes `status` ONLY. home_score and away_score keep whatever was last
+ * observed — possibly from the 60th minute — and end_time stays NULL, because
+ * this path never learned when the match actually ended. Only the confirm path
+ * writes end_time, which is what makes a non-null end_time mean "we observed
+ * this finish" rather than "a reconciler touched this row".
+ *
+ * @param {number} cutoffHours
+ * @returns {Promise<Array<{ id: number, externalId: string|null }>>} the rows flipped
+ */
+export async function markStaleLiveMatchesFinished(cutoffHours) {
+    return db
+        .update(matches)
+        .set({ status: 'finished' })
+        .where(
+            and(
+                eq(matches.status, 'live'),
+                lte(matches.startTime, sql`now() - make_interval(hours => ${cutoffHours})`),
+            ),
+        )
+        .returning({ id: matches.id, externalId: matches.externalId });
+}
