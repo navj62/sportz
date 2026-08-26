@@ -137,15 +137,56 @@ export default function HomePage() {
     load();
   }, [load]);
 
-  // The existing firehose broadcast, merged by id. No `subscribe` frame is
-  // sent — wiring subscriptions is the live-behaviour pass.
+  /**
+   * The firehose broadcast, merged by id and then PARTITIONED on status.
+   *
+   * The merge used to be a bare `prev.map`, which is a pure in-place rewrite:
+   * cardinality never changed, so membership of the live list was frozen at
+   * whatever the initial fetch returned. That is two separate drifts. A match
+   * whose payload flipped away from `live` kept its slot and simply wore a
+   * Finished badge inside the Live section; and a match that kicked off after
+   * load never appeared at all until a refresh. Nothing downstream caught
+   * either — `visibleLive`, `groupByCompetition` and `liveCounts` all key off
+   * `competitionId` and never read `status`.
+   *
+   * Membership is `status === 'live'`, not `!== 'finished'`: the enum carries
+   * five values, and `postponed` / `cancelled` have to leave too.
+   *
+   * A match ABSENT from the frame is kept. The payload is one poll's fixtures,
+   * so absence says nothing about the match — only an explicit non-live status
+   * removes one.
+   *
+   * Joining is safe against the list's own size because `prev` is not a page:
+   * `fetchLiveMatches` sweeps the cursor to completion, so it and the frame
+   * describe the same population — every live match. The joiner is a complete
+   * row (`upsertMatches(...).returning()`), so it renders with no extra fetch.
+   *
+   * The updater is pure — no mutation of `updates` — because React invokes it
+   * twice under StrictMode, and a drained map on the second pass would silently
+   * lose every joiner.
+   */
   useEffect(() => {
     return subscribe((msg) => {
       if (msg.type !== 'live_scores' || !msg.data) return;
-      const updates = new Map(msg.data.map((m) => [m.id, m]));
-      setLiveMatches((prev) =>
-        prev.map((m) => (updates.has(m.id) ? { ...m, ...updates.get(m.id)! } : m)),
-      );
+      const incoming = msg.data;
+      const updates = new Map(incoming.map((m) => [m.id, m]));
+
+      setLiveMatches((prev) => {
+        const present = new Set(prev.map((m) => m.id));
+        const next: Match[] = [];
+
+        for (const m of prev) {
+          const update = updates.get(m.id);
+          const merged = update ? { ...m, ...update } : m;
+          if (merged.status === 'live') next.push(merged);
+        }
+
+        for (const m of incoming) {
+          if (!present.has(m.id) && m.status === 'live') next.push(m);
+        }
+
+        return next;
+      });
     });
   }, []);
 
