@@ -32,8 +32,8 @@ export const LIVE_SYNC_LOCK_KEY = 'live-sync:poll';
 
 // Long enough to outlast a poll — one /fixtures?live=all request with up to
 // API_FOOTBALL_MAX_RETRIES backed-off retries, plus the upserts — and far
-// shorter than the 900s live interval, so a holder that dies mid-poll can never
-// wedge the lock into the next cycle.
+// shorter than the 1200s live interval, so a holder that dies mid-poll can
+// never wedge the lock into the next cycle.
 //
 // Getting this wrong degrades gently in both directions: too short means two
 // instances briefly poll together (wasted quota, and the upserts are idempotent

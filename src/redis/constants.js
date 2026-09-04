@@ -11,13 +11,24 @@ export const LOCK_PREFIX = 'sportz:lock:';
 export const DEFAULT_CACHE_TTL_SECONDS = 60;
 
 // Per-endpoint read-cache TTLs, sized against how fast the underlying data can
-// actually change. liveSync is the sole writer and polls at 900s live /
-// 1800s idle, so every value here is well under one write cycle — the cache can
-// only ever serve data the poller has already committed.
+// actually change. liveSync is the sole writer and polls at 1200s live /
+// 1800s idle.
 //
 // Match data moves every cycle, so it gets the shortest window. Standings move
 // once per matchday at most. Competitions are near-static: name, country and
 // logo change essentially never, and `currentRound` advances weekly.
+//
+// The first two sit well under one write cycle, so they can only ever serve
+// data the poller has already committed. COMPETITIONS DOES NOT, and saying
+// otherwise here was wrong at the previous 900s interval too — 3600s exceeds
+// both the live and idle intervals, so /competitions can serve up to three
+// poll cycles stale. That is accepted, not overlooked: the fields it caches do
+// not move on a poll cadence. The observable cost is that a newly appearing
+// competition can take an hour to show up in the list.
+//
+// It is also the one entry that meets FOLLOWUPS 8's stated trigger for
+// explicit invalidation. Read that entry before treating this as a bug: the
+// argument there is about key completeness, and it does not turn on this TTL.
 export const MATCHES_CACHE_TTL_SECONDS = 60;
 export const STANDINGS_CACHE_TTL_SECONDS = 300;
 export const COMPETITIONS_CACHE_TTL_SECONDS = 3_600;

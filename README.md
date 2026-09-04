@@ -14,13 +14,13 @@ Entirely public and entirely read-only: no accounts, no writes, nothing to
 configure. The job is a glance — what is the score right now, and did anything
 just happen.
 
-![Sportz home page](docs/ScreenshotHome.png)
+![Sportz home page](docs/screenshot-home.png)
 
 *Live section empty because the upstream account is suspended — see
 [constraints](#design-decisions-and-constraints). Finished matches carry real
 final scores, written by the reconciliation pass below.*
 
-![Match detail](docs/ScreenshotMatch.png)
+![Match detail](docs/screenshot-match.png)
 
 ## Architecture
 

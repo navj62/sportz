@@ -6,10 +6,12 @@ import { CACHE_HEALTH_MIN_CACHEABLE_LOOKUPS } from './constants.js';
  *
  * ── Invalidation: TTL only, deliberately ─────────────────────────────────────
  * There is no write-side invalidation, and its absence is a decision rather
- * than an oversight. liveSync is the sole writer and polls at 900s live /
- * 1800s idle; every TTL here is far shorter than that, so the worst staleness
- * a reader can observe is one TTL against data that changes at most every 15
- * minutes. Explicit invalidation would buy an invisible improvement while
+ * than an oversight. liveSync is the sole writer and polls at 1200s live /
+ * 1800s idle, so the worst staleness a reader can observe is one TTL against
+ * data that changes at most every 20 minutes. The match and standings TTLs
+ * (60s, 300s) are far shorter than one write cycle; the competitions TTL
+ * (3600s) is deliberately longer — see the sizing note in constants.js.
+ * Explicit invalidation would buy a near-invisible improvement while
  * reintroducing on the write side exactly the key-completeness risk the
  * whole-object keying below exists to eliminate — a write that invalidates
  * four of five key variants is a silent stale-read bug.

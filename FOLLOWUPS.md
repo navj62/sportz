@@ -158,11 +158,23 @@ database and nothing tells the cache. That is a decision, not an omission, and
 `src/redis/cache.js` documents it at the point where someone would go looking
 for the missing invalidation.
 
-It holds because the write cadence is far slower than any TTL here. The poller
-runs at 900s live / 1800s idle against TTLs of 60s, 300s and 3600s, so the
-worst staleness a reader can see is one TTL against data that changes at most
-every 15 minutes. Explicit invalidation would buy an improvement nobody can
-observe.
+It holds because the write cadence is far slower than the TTLs that matter. The
+poller runs at 1200s live / 1800s idle against TTLs of 60s (matches), 300s
+(standings) and 3600s (competitions), so the worst staleness a reader can see
+is one TTL against data that changes at most every 20 minutes. Explicit
+invalidation would buy an improvement nobody can observe.
+
+One carve-out, corrected here after it was found overstated in the source
+comments: **the competitions TTL of 3600s is longer than both intervals**, so
+`/competitions` alone can serve up to three poll cycles stale. That was equally
+true at the previous 900s interval — it is not drift from the retiming — and it
+technically meets this entry's own trigger below. It is nonetheless accepted
+rather than due, because the trigger is a proxy for a staleness someone can
+observe, and the fields cached there (name, country, logo, and a `currentRound`
+that advances weekly) do not move on a poll cadence. The one visible cost is
+that a newly appearing competition can take an hour to enter the list. If that
+ever becomes a complaint, the fix is to shorten that TTL, not to add
+invalidation — the key-completeness argument below is unchanged by it.
 
 The reason it is not merely unnecessary but actively risky: cache keys encode
 the FULL query parameter set, so there is no bounded list of keys to delete
@@ -299,10 +311,44 @@ beyond the live sweep.
 
 ## 12. The test suite shares the dev Redis, so cache tests can be contaminated
 
-**REASONED, NOT CONFIRMED.** The mechanism below is inferred from the failure
-shape and the absent env var; it was not proven, because the running backend
-could not be cleanly stopped to test the hypothesis in isolation. Treat it as
-the leading explanation, not a diagnosis.
+**CONFIRMED 2026-09-04, and the source is worse than this entry assumed.** The
+mechanism below was originally inferred from the failure shape and the absent
+env var. It has now been observed directly, with one correction that matters:
+the contaminating writer is not only *a locally running backend*. It is the
+DEPLOYED stack, which shares this same Upstash instance and cannot be turned
+off the way a local `npm run dev` can.
+
+Evidence, captured while both named tests were failing:
+
+- **No local backend was running** (`ps` clean), so the entry's stated
+  precondition — "cache tests are only trustworthy with no local backend
+  running" — was already satisfied, and the tests failed anyway.
+- `KEYS sportz:cache:*` returned three live `competitions:list` entries,
+  including the exact key the cold-cache test needs absent:
+  `competitions:list:[["limit",100]]`.
+- Their TTLs read 3256-3259 of 3600, putting the write minutes earlier, DURING
+  the test run rather than left over from before it.
+- The other two keys carry `["cursor",126]` and `["cursor",400]`. The test
+  database truncates with `RESTART IDENTITY`, so its competition ids start at
+  1. Cursors in the hundreds are production ids. The rows are not ours.
+
+The collision is structural, not coincidental: `cacheKey` encodes the query
+parameter set and nothing about which DATABASE answered it, so a production
+`/competitions?limit=100` and a test one are the same key by construction. The
+deployed frontend serving one page is enough to fail the suite for the next
+hour, and the competitions TTL of 3600s is the longest in the app, which is why
+these two tests are the ones that break.
+
+Note the second-order effect on cleanup. `afterEach` deletes keys read off the
+`cacheSet` spy, which is the right design — but a test that fails BECAUSE it
+got an unexpected hit never called `cacheSet` for that key, so it has nothing
+to delete. The suite cannot clean up the contamination that broke it.
+
+This raises the priority of the fix below from tidiness to correctness of the
+signal: `retry: 2` cannot help, because the contaminating value outlives every
+retry. Until it is done, treat a `/competitions` failure in this suite as
+unproven rather than as a regression, and check `KEYS sportz:cache:*` before
+believing it.
 
 `tests/setup.js` redirects `DATABASE_URL` to `TEST_DATABASE_URL`, and the
 integration suites refuse to run if that redirect did not take. **There is no
@@ -378,3 +424,52 @@ departures costs one or two requests and this becomes cheap to fix.
 
 Until then the inconsistency is deliberate and bounded: it only affects matches
 that ended between two polls, and only their event list.
+
+---
+
+## 14. Verification record: reconciliation against a genuinely suspended API
+
+**Not deferred work. A record of a manual verification, kept because the
+evidence otherwise lived only in conversation and in the README's constraints
+section — and it is the kind of claim that should be checkable from the repo.**
+
+**Trigger to re-run: any change to either reconciliation tier, or the upstream
+account being restored** — a live account is the one condition this run could
+not cover, since it verified the degraded path specifically.
+
+The API-Football free-tier account has been suspended three times, most recently
+after consolidating to a single account on their support's instruction. That
+turned an awkward outage into the exact test the two-tier design was built for:
+a feed that returns nothing, where a naive "absent means finished" pass would
+have marked all 885 matches finished at once.
+
+Run against the suspended account, with a live match seeded at 9h old and
+another at 1h old. Five results, all PASS:
+
+1. Tier 1 flipped the 9h row to `finished` **despite the API call failing**.
+2. Tier 1 left the 1h row `live`.
+3. No score was invented on the flipped row — it kept its last-observed value.
+4. `end_time` stayed NULL on the flipped row.
+5. Tier 2 did not run at all on the failed cycle.
+
+**Each result is what the mechanism predicts, which is the point of recording
+them together.** `reconcileStaleLiveMatches()` is called before
+`syncLiveFixtures()` inside `pollLiveFixtures`, so a throwing fetch cannot stop
+it (1); `RECONCILE_STALE_LIVE_CUTOFF_HOURS` is 6 (2);
+`markStaleLiveMatchesFinished` issues `.set({ status: 'finished' })` and nothing
+else, which is what leaves both the score and `end_time` alone (3, 4); and
+`confirmDepartures` is reached only from inside `syncLiveFixtures`, after the
+fetch and after the empty-payload early return, so a failed cycle never reaches
+it (5).
+
+Result 4 is the one worth keeping in mind. A NULL `end_time` is not missing
+data: it is the tier 1 floor correctly declining to claim it observed a finish
+it only inferred. Only a tier 2 confirm writes that column. Anything that starts
+populating `end_time` from the floor has broken the column's meaning, and this
+run is the record of what it meant.
+
+**Provenance: run by hand by the repo owner, not reproduced in CI.** There is no
+automated equivalent, because the suspension is not something the suite can
+manufacture. The nearest automated coverage is `tests/liveSync.test.js`, which
+drives the same branches with a mocked fetch — that proves the wiring, where
+this proves the behaviour under a real dead upstream.
