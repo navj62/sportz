@@ -10,7 +10,7 @@ import {
     __resetLockStatsForTests,
 } from '../src/redis/client.js';
 
-// These hit a real Upstash instance, so they gate on TEST_UPSTASH_REST_URL —
+// These hit a real Upstash instance, so they gate on TEST_UPSTASH_REDIS_REST_URL —
 // the ISOLATED one — mirroring how integration.test.js gates on
 // TEST_DATABASE_URL.
 //
@@ -20,7 +20,7 @@ import {
 // one. This line and the beforeAll guard below cover different failures — the
 // guard catches a redirect that did not take effect, this catches isolation
 // never having been configured at all.
-const skip = !process.env.TEST_UPSTASH_REST_URL;
+const skip = !process.env.TEST_UPSTASH_REDIS_REST_URL;
 
 // Namespaced per run so a re-run never reads a key a previous run left behind,
 // and two runs in parallel cannot fight over the same lock.
@@ -41,11 +41,11 @@ describe.skipIf(skip)('Redis client — real Upstash', { retry: 2 }, () => {
     // namespaced with short TTLs and reap on their own.
     // Refuse to run unless the redirect in tests/setup.js took effect. What this
     // proves is exactly that: the client is pointed at the instance named by
-    // TEST_UPSTASH_REST_URL. It is the integration suites' database guard one
+    // TEST_UPSTASH_REDIS_REST_URL. It is the integration suites' database guard one
     // dependency over, and it exists for the same reason — that redirect once
     // silently no-opped, and nothing downstream noticed.
     beforeAll(() => {
-        const expected = new URL(process.env.TEST_UPSTASH_REST_URL).hostname;
+        const expected = new URL(process.env.TEST_UPSTASH_REDIS_REST_URL).hostname;
         const actual = new URL(process.env.UPSTASH_REDIS_REST_URL).hostname;
         if (expected !== actual) {
             throw new Error(

@@ -39,12 +39,19 @@ if (process.env.TEST_UPSTASH_REDIS_REST_URL && process.env.TEST_UPSTASH_REDIS_RE
     // The vacuous-green case. The two real-Redis suites gate on the TEST pair,
     // so they SKIP here rather than quietly exercising the production instance
     // — but an unannounced skip reads exactly like a pass in the summary line.
-    // console, not pino: pino is silenced immediately below.
-    console.warn(
+    //
+    // process.stderr.write, NOT console.warn, and not pino (silenced below).
+    // Vitest intercepts console in the worker and attaches each line to the
+    // running test; a setupFiles line has no test to attach to, so when every
+    // test in the file then skips the warning is dropped entirely. Verified
+    // both ways: console.warn here printed nothing under `vitest run`, a raw
+    // stderr write printed. A warning about a silent skip must not itself be
+    // silently skipped.
+    process.stderr.write(
         '[tests/setup] TEST_UPSTASH_REDIS_REST_URL/TEST_UPSTASH_REDIS_REST_TOKEN unset — '
         + 'redis.test.js and cachedReads.test.js will SKIP (33 tests). '
         + 'UPSTASH_REDIS_REST_URL is set but the suites deliberately do not use '
-        + 'it. See FOLLOWUPS 12 and .env.example.',
+        + 'it. See FOLLOWUPS 12 and .env.example.\n',
     );
 }
 
