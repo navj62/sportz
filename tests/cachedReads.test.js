@@ -27,9 +27,14 @@ const migrationsFolder = path.join(
     'drizzle',
 );
 
-// Needs BOTH a test database and Upstash credentials. Without either, the
-// cache-enabled path cannot be exercised at all and passing would be vacuous.
-const skip = !process.env.TEST_DATABASE_URL || !process.env.UPSTASH_REDIS_REST_URL;
+// Needs BOTH an isolated test database and an isolated test Upstash instance.
+// Without either, the cache-enabled path cannot be exercised at all and passing
+// would be vacuous.
+//
+// Note this gates on TEST_UPSTASH_REST_URL, not UPSTASH_REDIS_REST_URL. Gating
+// on the production var was the hole that let this suite run against the shared
+// instance — see the same change in redis.test.js.
+const skip = !process.env.TEST_DATABASE_URL || !process.env.TEST_UPSTASH_REST_URL;
 
 // Retried for the same reason as redis.test.js: a transient Upstash failure
 // surfaces as cacheGet returning null, which reads as a miss, which fails a
@@ -79,6 +84,21 @@ describe.skipIf(skip)('Cached reads — cache enabled', { retry: 2 }, () => {
         if (expected !== actual) {
             throw new Error(
                 `Refusing to run: pool points at ${actual}, not the test DB ${expected}`,
+            );
+        }
+
+        // The same guard for Redis, which this suite reads and writes for real.
+        // What it proves is that the Upstash redirect in tests/setup.js took
+        // effect — the client is pointed at TEST_UPSTASH_REST_URL's instance.
+        // Without it a no-opped redirect puts these assertions back on the
+        // instance the deployed backend writes, which is what made the two
+        // /competitions tests fail intermittently for reasons that were not
+        // theirs. See FOLLOWUPS 12.
+        const expectedRedis = new URL(process.env.TEST_UPSTASH_REST_URL).hostname;
+        const actualRedis = new URL(process.env.UPSTASH_REDIS_REST_URL).hostname;
+        if (expectedRedis !== actualRedis) {
+            throw new Error(
+                `Refusing to run: Redis points at ${actualRedis}, not the test instance ${expectedRedis}`,
             );
         }
 
