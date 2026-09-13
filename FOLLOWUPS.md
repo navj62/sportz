@@ -309,7 +309,7 @@ beyond the live sweep.
 
 ---
 
-## 12. The test suite shares the dev Redis, so cache tests can be contaminated
+## 12. The test suite shares the dev Redis, so cache tests can be contaminated — RESOLVED
 
 **CONFIRMED 2026-09-04, and the source is worse than this entry assumed.** The
 mechanism below was originally inferred from the failure shape and the absent
@@ -383,6 +383,63 @@ dependency over. A key prefix per run would also work and needs no second
 instance, but it leaves the two processes sharing an eviction budget.
 
 Until then: cache tests are only trustworthy with no local backend running.
+
+**RESOLVED 2026-09-13.** Diagnosis above is kept verbatim — the
+cacheKey-collision reasoning is what this entry exists to preserve, and
+nothing about it was wrong. Only the fix landed.
+
+Two new env vars, `TEST_UPSTASH_REDIS_REST_URL` / `TEST_UPSTASH_REDIS_REST_TOKEN`
+(a second, separate Upstash database), redirected in `tests/setup.js` before
+any module loads — the same mechanism as the `TEST_DATABASE_URL` redirect, one
+dependency over. Documented in `.env.example`. Note the name landed as
+`TEST_UPSTASH_REDIS_REST_URL` (mirroring the production var name exactly,
+`TEST_` + `UPSTASH_REDIS_REST_URL`), not the `TEST_UPSTASH_REST_URL` this entry
+originally proposed — the credentials were provisioned under the more
+consistent name before the mismatch was caught, so the code was renamed to
+match rather than the other way around.
+
+Both real-Redis suites now gate their `skipIf` on `TEST_UPSTASH_REDIS_REST_URL`,
+not `UPSTASH_REDIS_REST_URL`. This is the change that actually closes the hole:
+the production var is set for anyone with a working `.env`, so gating on it
+meant an unconfigured developer didn't skip — they silently ran the suite
+against production. Both suites also gained a `beforeAll` host-hostname guard
+mirroring the integration suite's Postgres guard, proving the redirect took
+effect (not that the target is "safe" — a deliberately-misconfigured
+`TEST_UPSTASH_REDIS_REST_URL` pointed at production would still pass it, the
+same limitation the Postgres guard has always had).
+
+Verification performed, differentially rather than by "the suite is green"
+(the suite was already 224/224 before this fix — see below):
+
+- **Contamination reproduced and fixed.** Wrote the exact colliding key,
+  `sportz:cache:competitions:list:[["limit",100]]`, to the isolated TEST
+  instance with a production-shaped value (ids 400/126, matching the cursor
+  tell above) and the real 3600s TTL. Both named tests failed, by name, with
+  the exact predicted signature — `GET /competitions: cold miss then warm hit`
+  got `{hits: 2, misses: 0}` instead of `{hits: 1, misses: 1}`, and
+  `caches /competitions for 3600s` saw `cacheSet` called 0 times — and the
+  failure survived vitest's own `retry: 2`, confirming retries cannot outlive
+  a poisoned value. Deleted the key; the suite returned to 224/224.
+- **Guard mutation-tested.** Commented out the redirect assignment (the
+  original no-op incident shape), printed the mutated region, `node --check`ed
+  it, then ran both real-Redis suites against a fake test-instance URL: both
+  refused in `beforeAll` with `Refusing to run: Redis points at
+  stunning-urchin-164639.upstash.io, not the test instance
+  fake-test-instance.upstash.io` — naming the production host, before any
+  Redis command reached it. A control run first (redirect intact, same fake
+  URL) showed the guard silent and the suite failing on ordinary connection
+  errors instead, so the mutated run's failure is attributable to the guard
+  specifically. Reverted; `shasum` confirmed byte-identical.
+- **Skip path confirmed visible.** With the TEST vars unset: `191 passed | 33
+  skipped (224)` — 12 from `redis.test.js`, 21 from `cachedReads.test.js` —
+  plus a `tests/setup.js` warning on stderr naming both suites and the skip
+  count. (First attempt used `console.warn` and printed nothing: vitest
+  attaches intercepted console output to the running test, and a setupFiles
+  line has no test to attach to once every test in the file skips. Switched to
+  a raw `process.stderr.write`, which survives.)
+
+Final state: 224/224 against the isolated instance, confirmed clean before and
+after the reproduction.
 
 ---
 
