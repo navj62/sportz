@@ -134,6 +134,17 @@ costs more daily quota than being live, which inverts the whole sizing model.
   tracked in `FOLLOWUPS.md`.
 - **`events.type` is `text`, not an enum**, so a new upstream event type needs
   no migration.
+- **Staying on API-Football's free tier is a decision, not a default.** Two
+  higher-quota providers were evaluated and rejected, and the paid tier was
+  costed and declined. The reason is request economics, not headline quota:
+  `/fixtures?live=all` embeds events, so a cycle costs **one** request, while
+  both candidates need one request *per live match* — a 10,000/day headline buys
+  roughly 200 cycles against paid API-Football's 7,500. Two consequences are
+  knowingly accepted: the 20-minute poll interval, and the free tier's
+  suspension risk. That second one makes entry 14's two-tier reconciliation
+  load-bearing rather than defensive. Do not re-open either question on
+  freshness alone — the full reasoning and the specific triggers are
+  `FOLLOWUPS.md` entry 15.
 
 ## Conventions
 

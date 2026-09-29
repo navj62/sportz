@@ -530,3 +530,216 @@ automated equivalent, because the suspension is not something the suite can
 manufacture. The nearest automated coverage is `tests/liveSync.test.js`, which
 drives the same branches with a mocked fetch — that proves the wiring, where
 this proves the behaviour under a real dead upstream.
+
+---
+
+## 15. Replacing API-Football, and paying for it — BOTH EVALUATED AND DECLINED
+
+**Not deferred work, and not a wish. A decision record, kept because the
+decision was to change nothing — and an entry that says "we looked and chose to
+stay" is the only thing that stops a future session re-running the same
+evaluation from the same headline numbers.**
+
+Two separate questions were asked and both were answered no: *migrate to a
+higher-quota provider* (no — see the economics below) and *pay API-Football for
+~7,500 requests/day* (no — not justified for a portfolio project, reasoning at
+the end of this entry).
+
+**Trigger to re-open the migration question: a provider that embeds events in a
+single all-live request.** Not a bigger headline quota — that is the whole reason
+this pass ended where it did.
+
+**Trigger to re-open the paid question: the project acquiring real users, or
+suspensions making the free tier unusable rather than merely slow.** Both of
+those change the cost side of a tradeoff that currently resolves against paying.
+Freshness alone is not a trigger — the 20-minute interval is a known, accepted
+consequence, not an oversight.
+
+### Why the pass happened
+
+The free-tier account has been suspended three times across two accounts and
+two machines, each within about a day of real polling, under compliant usage —
+roughly 96 requests/day against a 100/day cap, on a single account, after their
+support instructed the consolidation. Entry 14 is the verification record from
+the most recent suspension. The 100/day cap also pins knowledge freshness to the
+poll interval the quota forces, which is the second motivation: 15-20s polling
+was never affordable.
+
+Two candidates were evaluated against current official documentation, plus one
+sampling request. Both were rejected.
+
+### The finding that decided it: cycle cost, not daily quota
+
+`/fixtures?live=all` **embeds events**, so one cycle costs **one request**
+regardless of how many matches are live. This is already recorded in CLAUDE.md
+as an architectural constraint; what this pass established is that it is also
+the single most valuable property of the provider, and that neither candidate
+has it.
+
+Both candidates serve events **per match**:
+
+- SportScore — timeline only on `/api/widget/match/?sport=&slug=`, one request
+  per match
+- SportSRC V2 — `?type=incidents&id={match_id}`, one request per match, at every
+  price tier
+
+So a cycle costs `1 + N` rather than `1`. The value of `N` is already recorded
+in this repo: `fetchFixtureEvents` in `src/services/apiFootball.js` carries the
+note that one call per live fixture "would cost ~47 requests a cycle", which is
+the observed concurrent-live-fixture count here. That makes a cycle 48 requests:
+
+| Provider | Headline quota | Cost per cycle | Affordable cycles/day |
+|---|---|---|---|
+| SportScore | ~10,000/day *(disputed, see below)* | 48 | **~208** |
+| SportSRC V2 Starter | 10,000/day ($9.99/mo) | 48 | **~208** |
+| API-Football paid | 7,500/day | 1 | **7,500** |
+
+The exact figure moves with concurrency — at 40 concurrent matches a 10,000/day
+quota buys ~250 cycles, at the repo's observed 47 it buys ~208 — but the order
+of magnitude is the finding, and it does not move.
+
+**A headline quota 33% larger buys roughly 36× fewer cycles.** Comparing daily
+request allowances was comparing the wrong number: the constraint is requests
+per cycle, and embedded events are worth more than any quota either candidate
+offers. ~208 cycles/day will not sustain continuous polling through a single
+European evening. On the disputed low reading of SportScore's quota (1,000/day)
+it lands at ~20 cycles/day — far worse than the 100/day free tier this pass set
+out to escape.
+
+The comment in `apiFootball.js` means the 1+N cost was already understood here
+as a reason not to call the standalone events endpoint. What this pass adds is
+that it is also the correct axis for comparing *providers* — and that on that
+axis both candidates lose to the incumbent before any other property is weighed.
+
+### SportScore — four further disqualifications, each independent
+
+1. **No id field. Identity is a URL slug.** The sampled match object carries
+   `url: "/football/match/gimnasia-jujuy-vs-san-martin-tucuman/"` and no id of
+   any kind. `matches.externalId` is the `onConflictDoUpdate` target in
+   `src/services/matchService.js`, so two fixtures between the same teams in one
+   season — a league double-header plus a cup tie — would **silently merge into
+   one row**. Not an error, not a duplicate: a merge. Silent corruption is worse
+   than a loud failure, and the column being `text().unique()` means nothing
+   would reject the slug on the way in.
+2. **Permission is unverifiable.** The site-wide Terms of Use forbid commercial
+   use, forbid "extraction (copying) or utilisation (making available to the
+   public) of Database Content", and forbid burdening the server "with automated
+   requests". A separate API Terms of Use exists at `/developers/terms/` and
+   presumably grants the consent the site terms withhold — it is behind a
+   Cloudflare managed challenge and could not be read. Deploying a public app on
+   permission that cannot be read is not acceptable.
+3. **`limit` caps at 50 and there is no date parameter.** No by-date endpoint,
+   no by-ids endpoint, no per-competition fixtures endpoint. The entire global
+   view is one call capped at 50 matches with undocumented ordering, so a
+   finished match can fall out of the window with no recovery path. That is the
+   885-stuck-matches failure mode with the escape hatch removed — and the
+   two-tier reconciliation in entry 14 exists precisely because that hatch
+   matters.
+4. **No elapsed minute, and 15-20s polling is impossible anyway.** The sampled
+   payload has `status`, `status_text` and a kickoff `time`, no elapsed field —
+   so the one genuine upgrade motivating the pass is absent. Separately, the
+   response carries `cache-control: public, max-age=60`, so polling faster than
+   60s returns cached data. The faster-polling goal is unreachable on this
+   provider at any quota.
+
+Two smaller notes, recorded so they are not rediscovered: SportScore serves no
+`X-RateLimit-*` headers at all, so quota consumption is unobservable — worse
+than API-Football, which reports remaining quota; and every asset URL points at
+`img.thesports.com` while `get_tracker` takes a "numeric match id from the
+upstream provider", so SportScore is a reseller of a third-party feed rather
+than a primary source.
+
+### SportSRC V2 — disqualified on the free tier outright
+
+**Events are Premium-only.** The free plan card reads `1,000 req/day` /
+`Schedules & Scores` / `Stream Embeds` / `No Deep Data`, and `?type=incidents`
+sits under the heading "Deep Data (Premium Only)". Free access is two football
+endpoints: `?type=matches` and `?type=detail`, the latter covering timeframe,
+scores, venue and stream URLs — no events. That takes out `routes/events.js`,
+`routes/commentary.js`, `eventService.js` and the `replaceMatchEvents` path in
+`liveSync.js`.
+
+Three further findings, which would apply on a paid tier too:
+
+- Their recommended cadence exceeds their own free quota. They advise polling
+  every 15-30s; at 30s that is 2,880 requests/day against a 1,000/day cap.
+- The free quota has already been cut unilaterally — release v2.4.5 "adjusted"
+  it to 1,000/day. The headline number has precedent for moving down.
+- **There is no published Terms of Service.** The footer links labelled Terms of
+  Service and Privacy Policy carry no `href`; five candidate paths all return
+  the byte-identical homepage. The only legal text is a disclaimer describing
+  the service as aggregation that accepts no responsibility for "accuracy,
+  copyright compliance, legality". Their own release notes describe a scraping
+  engine with "proxy rotation", which is the same fragility that caused the
+  suspensions here, one layer removed.
+
+### Decision: stay on API-Football, on the free tier
+
+Two decisions, taken together.
+
+**Not migrating.** The cycle economics above are the reason, and they hold at
+every quota reading either candidate offers. Beyond that, staying preserves two
+things a migration would spend:
+
+- **Zero migration cost.** No files touched. The adapter, the event vocabulary,
+  and every trap already handled stay working.
+- **Zero re-discovery cost.** The expensive part of the original integration was
+  not writing HTTP calls, it was learning what the real responses contain: HTTP
+  200 on failure with a polymorphic `errors` field; `type: 'Goal'` containing
+  Normal Goal, Penalty, Own Goal *and* Missed Penalty; `Var` + "Goal Disallowed"
+  being a retraction; shootout kicks filed as ordinary goals at minute 90 and
+  needing the exact `metadata.comments === 'Penalty Shootout'` marker. That
+  knowledge is provider-specific and has real value. Migrating discards it and
+  buys an unknown set of equivalent traps in exchange.
+
+**Not paying either.** The paid tier — roughly $20/month for about 7,500
+requests/day — was costed and declined. It is the technically better option and
+carries zero migration cost, so this is purely a value judgement: a recurring
+subscription is not justified for a portfolio project with no users. The paid
+option is recorded here precisely because it is attractive on the merits; the
+reason it was declined is cost, not any defect, and that distinction is what
+stops the question being reopened on the wrong grounds.
+
+**What staying on free costs, stated plainly.** This pass was motivated by two
+problems, and the decision solves neither:
+
+1. **Freshness stays capped.** The 100/day cap forces
+   `LIVE_SYNC_INTERVAL_MS=1200000` — 20 minutes. The 15-20s polling that
+   motivated the evaluation is unaffordable on free and remains so. For
+   reference if the paid question is ever reopened: on 7,500/day, 20s costs 4,320
+   requests/day and 15s costs 5,760, both inside budget, while 10s costs 8,640
+   and does not fit — so 15s would be the floor. `LIVE_SYNC_IDLE_INTERVAL_MS` is
+   1800000 and would need no attention, staying far above any live value in that
+   range.
+2. **Suspension risk stays.** All three suspensions happened on free accounts,
+   under compliant usage. Nothing in this decision reduces that risk; it accepts
+   it. What makes accepting it survivable is that the mitigation is already
+   built: the two-tier reconciliation recorded in entry 14 was verified against a
+   genuinely suspended account, and is the reason a dead upstream degrades
+   instead of marking 885 matches finished at once. **That mitigation is now
+   load-bearing rather than defensive** — anything that weakens
+   `reconcileStaleLiveMatches` or the tier-1/tier-2 split is removing the only
+   thing standing between a suspension and visible data corruption.
+
+Both costs are accepted knowingly. Neither is a defect to be fixed, and neither
+is a reason to reopen on its own — see the triggers at the top of this entry.
+
+**What was *not* the reason.** Rejecting the candidates was not inertia, and not
+a judgement that they are low quality; both were rejected on measured properties.
+Declining the paid tier was not a judgement that the free tier is adequate — it
+demonstrably is not, on freshness or on reliability. The mistake worth not
+repeating is the one that started the pass: treating the daily request allowance
+as the figure of merit when the binding constraint is the cost of a single poll
+cycle.
+
+**Provenance and limits of this record.** Phase 1 (documentation verification)
+plus one sampling request to SportScore's live endpoint; Phase 2 sampling was
+deliberately not run, because the economics finding settles the question without
+it. No code was written and nothing under `src/` was changed. Everything
+asserted about SportSRC comes from its own current docs, read in full.
+Everything asserted about SportScore's response shape comes from a real sampled
+payload. **Two SportScore claims remain unverified** and would need a browser to
+settle, since Cloudflare blocks non-browser clients from `/developers/`: the
+free-tier quota, where the public docs page says ~10,000/day while SportScore's
+own MCP server README says ~1,000/day; and the API Terms of Use. Neither changes
+the decision — the cycle-cost finding holds at both quota readings.
